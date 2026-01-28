@@ -3,23 +3,35 @@
 LocalRank MCP Server - Read-only API access for AI agents
 
 Supports both stdio (Claude Desktop) and HTTP/SSE (Claude.ai web) transports.
+- stdio: Uses LOCALRANK_API_KEY env var
+- HTTP/SSE: Uses OAuth Bearer token from request
 """
 import os
 import json
 import asyncio
+from contextvars import ContextVar
 import httpx
 from mcp.server import Server
 from mcp.types import Tool, TextContent
 
 API_BASE = os.getenv("LOCALRANK_API_URL", "https://api.localrank.so")
-API_KEY = os.getenv("LOCALRANK_API_KEY", "")
+API_KEY = os.getenv("LOCALRANK_API_KEY", "")  # For stdio mode
 PORT = int(os.getenv("PORT", "8000"))
+
+# Context var to store OAuth token for HTTP mode
+current_token: ContextVar[str] = ContextVar("current_token", default="")
 
 server = Server("localrank")
 
 def api_get(endpoint: str, params: dict = None) -> dict:
     """Make authenticated GET request to LocalRank API"""
-    headers = {"Authorization": f"Api-Key {API_KEY}"}
+    token = current_token.get()
+    if token:
+        # OAuth token from HTTP mode
+        headers = {"Authorization": f"Bearer {token}"}
+    else:
+        # API key from env (stdio mode)
+        headers = {"Authorization": f"Api-Key {API_KEY}"}
     resp = httpx.get(f"{API_BASE}{endpoint}", headers=headers, params=params, timeout=30)
     resp.raise_for_status()
     return resp.json()
@@ -159,6 +171,12 @@ def run_http():
     sse = SseServerTransport("/messages/")
 
     async def handle_sse(request):
+        # Extract OAuth token from Authorization header
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            token = auth_header[7:]
+            current_token.set(token)
+
         async with sse.connect_sse(
             request.scope, request.receive, request._send
         ) as streams:
@@ -167,6 +185,11 @@ def run_http():
             )
 
     async def handle_messages(request):
+        # Extract OAuth token for message handling too
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            token = auth_header[7:]
+            current_token.set(token)
         await sse.handle_post_message(request.scope, request.receive, request._send)
 
     async def health(request):
