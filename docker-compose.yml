@@ -1,0 +1,10 @@
+version: '3.8'
+
+services:
+  web:
+    build: .
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      - LOCALRANK_API_URL=${LOCALRANK_API_URL:-https://api.localrank.so}
+      - PORT=8000
