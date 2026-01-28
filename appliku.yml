@@ -1,8 +1,0 @@
-build_settings:
-  build_image: dockerfile
-  dockerfile_path: .
-  container_port: 8000
-
-processes:
-  web:
-    cmd: python -c "from localrank_mcp import run_http; run_http()"
