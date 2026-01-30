@@ -49,12 +49,17 @@ async def list_tools():
     return [
         Tool(
             name="list_scans",
-            description="List all rank tracking scans. Returns scan ID, URL, keywords, and current rankings.",
-            inputSchema={"type": "object", "properties": {}}
+            description="List rank tracking scans with summaries. Each scan has a share_url for a visual map report. Use limit to control results (default 10).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "Max scans to return (default 10, max 50)"}
+                }
+            }
         ),
         Tool(
             name="get_scan",
-            description="Get detailed ranking data for a specific scan",
+            description="Get ranking summary for a scan. Returns avg_rank per keyword and share_url for visual map. Use share_url to show the client a visual report.",
             inputSchema={
                 "type": "object",
                 "properties": {"scan_id": {"type": "string", "description": "The scan UUID"}},
@@ -102,16 +107,61 @@ async def list_tools():
     ]
 
 
+def summarize_scan(scan: dict) -> dict:
+    """Return lightweight scan summary with share URL emphasized"""
+    return {
+        "uuid": scan.get("uuid"),
+        "business_name": scan.get("business", {}).get("name"),
+        "keywords": scan.get("keywords", []),
+        "status": scan.get("status"),
+        "created_at": scan.get("created_at"),
+        "avg_rank": scan.get("avg_rank"),
+        "share_url": scan.get("share_url"),  # Visual map report URL
+        "scanType": scan.get("scanType"),
+    }
+
+def summarize_scan_detail(scan: dict) -> dict:
+    """Return scan detail with keyword rankings but without heavy grid data"""
+    keyword_summary = []
+    for kw in scan.get("keyword_results", []):
+        keyword_summary.append({
+            "keyword": kw.get("keyword"),
+            "avg_rank": kw.get("avg_rank"),
+            "best_rank": kw.get("best_rank"),
+            "found_count": kw.get("found_count"),
+        })
+    return {
+        "uuid": scan.get("uuid"),
+        "business_name": scan.get("business", {}).get("name"),
+        "keywords": scan.get("keywords", []),
+        "status": scan.get("status"),
+        "created_at": scan.get("created_at"),
+        "completed_at": scan.get("completed_at"),
+        "share_url": scan.get("share_url"),  # VISUAL MAP - share this with clients!
+        "public_share_enabled": scan.get("public_share_enabled"),
+        "keyword_rankings": keyword_summary,
+        "scanType": scan.get("scanType"),
+        "pinCount": scan.get("pinCount"),
+    }
+
 @server.call_tool()
 async def call_tool(name: str, arguments: dict):
     try:
         if name == "list_scans":
-            data = api_get("/api/scans/")
-            return [TextContent(type="text", text=json.dumps(data, indent=2))]
+            limit = min(arguments.get("limit", 10), 50)
+            data = api_get("/api/scans/", params={"page_size": limit})
+            # Return lightweight summaries
+            summaries = [summarize_scan(s) for s in data.get("results", [])]
+            return [TextContent(type="text", text=json.dumps({
+                "count": data.get("count"),
+                "scans": summaries,
+                "tip": "Use share_url to show clients a visual ranking map"
+            }, indent=2))]
 
         elif name == "get_scan":
             data = api_get(f"/api/scans/{arguments['scan_id']}/")
-            return [TextContent(type="text", text=json.dumps(data, indent=2))]
+            summary = summarize_scan_detail(data)
+            return [TextContent(type="text", text=json.dumps(summary, indent=2))]
 
         elif name == "list_citations":
             data = api_get("/citations/list/")
