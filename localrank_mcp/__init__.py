@@ -227,6 +227,22 @@ async def list_tools():
                 "required": ["business_name"]
             }
         ),
+        Tool(
+            name="prioritize_today",
+            description="Get a prioritized list of what to work on today. Shows clients needing urgent attention, quick wins available, and scheduled tasks.",
+            inputSchema={
+                "type": "object",
+                "properties": {}
+            }
+        ),
+        Tool(
+            name="delegate_tasks",
+            description="Get a list of tasks that can be delegated to a VA or team member. Routine work that doesn't need agency owner attention.",
+            inputSchema={
+                "type": "object",
+                "properties": {}
+            }
+        ),
     ]
 
 
@@ -1074,6 +1090,169 @@ async def call_tool(name: str, arguments: dict):
                 "keywords_analyzed": keywords,
                 "content_ideas": content_ideas[:15],
                 "tip": "Localized content targeting these keywords can improve rankings and attract qualified leads. Offer content creation as an add-on service."
+            }, indent=2))]
+
+        elif name == "prioritize_today":
+            # Get all data we need
+            scans_data = api_get("/api/scans/", params={"page_size": 100})
+            scans = scans_data.get("results", [])
+
+            # Group by business
+            by_business = {}
+            for scan in scans:
+                biz_name = scan.get("business", {}).get("name", "Unknown")
+                if biz_name not in by_business:
+                    by_business[biz_name] = []
+                by_business[biz_name].append(scan)
+
+            priorities = {
+                "urgent": [],      # Needs immediate attention
+                "important": [],   # Should do today
+                "quick_wins": [],  # Easy wins available
+                "routine": []      # Regular maintenance
+            }
+
+            for biz_name, client_scans in by_business.items():
+                latest = client_scans[0]
+                avg_rank = latest.get("avg_rank")
+
+                # Urgent: Rankings dropped significantly
+                if len(client_scans) >= 2:
+                    prev_avg = client_scans[1].get("avg_rank")
+                    if avg_rank and prev_avg and (avg_rank - prev_avg) > 3:
+                        priorities["urgent"].append({
+                            "client": biz_name,
+                            "task": "Investigate ranking drop",
+                            "reason": f"Dropped from {round(prev_avg, 1)} to {round(avg_rank, 1)}",
+                            "action": "Check GBP for issues, review recent changes, analyze competitors"
+                        })
+
+                # Important: Poor rankings need work
+                if avg_rank and avg_rank > 12:
+                    priorities["important"].append({
+                        "client": biz_name,
+                        "task": "Improve rankings",
+                        "reason": f"Average rank is {round(avg_rank, 1)} - not visible enough",
+                        "action": "Run SuperBoost or review GBP optimization"
+                    })
+
+                # Quick wins: Close to page 1
+                scan_detail = api_get(f"/api/scans/{latest['uuid']}/")
+                for kw in scan_detail.get("keyword_results", []):
+                    kw_rank = kw.get("avg_rank")
+                    if kw_rank and 11 <= kw_rank <= 15:
+                        priorities["quick_wins"].append({
+                            "client": biz_name,
+                            "task": f"Push '{kw.get('keyword')}' to page 1",
+                            "reason": f"Currently #{round(kw_rank, 1)} - just {round(kw_rank - 10, 1)} positions away",
+                            "action": "Add citations, get a review, or boost GBP posts"
+                        })
+                        break  # One quick win per client
+
+                # Routine: Clients doing well
+                if avg_rank and avg_rank <= 5:
+                    priorities["routine"].append({
+                        "client": biz_name,
+                        "task": "Monitor and maintain",
+                        "reason": f"Ranking well at #{round(avg_rank, 1)}",
+                        "action": "Continue current strategy, watch for competitor moves"
+                    })
+
+            # Limit results
+            for key in priorities:
+                priorities[key] = priorities[key][:5]
+
+            return [TextContent(type="text", text=json.dumps({
+                "today_priorities": priorities,
+                "summary": {
+                    "urgent_items": len(priorities["urgent"]),
+                    "important_items": len(priorities["important"]),
+                    "quick_wins": len(priorities["quick_wins"]),
+                    "routine_checks": len(priorities["routine"])
+                },
+                "tip": "Start with urgent items, then quick wins for momentum"
+            }, indent=2))]
+
+        elif name == "delegate_tasks":
+            # Get all data
+            scans_data = api_get("/api/scans/", params={"page_size": 100})
+            scans = scans_data.get("results", [])
+
+            # Group by business
+            by_business = {}
+            for scan in scans:
+                biz_name = scan.get("business", {}).get("name", "Unknown")
+                if biz_name not in by_business:
+                    by_business[biz_name] = []
+                by_business[biz_name].append(scan)
+
+            va_tasks = []
+            owner_tasks = []
+
+            for biz_name, client_scans in by_business.items():
+                latest = client_scans[0]
+                avg_rank = latest.get("avg_rank")
+                token = latest.get("public_share_token")
+                map_url = f"https://app.localrank.so/share/{token}" if token else None
+
+                # VA can do: Report generation, data entry, basic monitoring
+                va_tasks.append({
+                    "client": biz_name,
+                    "task": "Generate monthly report",
+                    "instructions": f"Download ranking map from {map_url}, add to client folder, update tracking spreadsheet",
+                    "skill_needed": "Basic"
+                })
+
+                # VA can do: Citation building
+                va_tasks.append({
+                    "client": biz_name,
+                    "task": "Submit to 5 citation sites",
+                    "instructions": "Use business details to submit to Yelp, YP, Foursquare, Hotfrog, Manta",
+                    "skill_needed": "Basic"
+                })
+
+                # Owner should do: Strategy decisions
+                if avg_rank and avg_rank > 10:
+                    owner_tasks.append({
+                        "client": biz_name,
+                        "task": "Review strategy - rankings below target",
+                        "reason": f"Avg rank {round(avg_rank, 1)} needs strategic intervention",
+                        "skill_needed": "Expert"
+                    })
+
+                # Owner should do: Client communication for issues
+                if len(client_scans) >= 2:
+                    prev_avg = client_scans[1].get("avg_rank")
+                    if avg_rank and prev_avg and (avg_rank - prev_avg) > 2:
+                        owner_tasks.append({
+                            "client": biz_name,
+                            "task": "Call client about ranking drop",
+                            "reason": "Proactive communication before they notice",
+                            "skill_needed": "Expert"
+                        })
+
+            # Get review campaigns for VA tasks
+            try:
+                campaigns_data = api_get("/review-booster/campaigns/")
+                campaigns = campaigns_data if isinstance(campaigns_data, list) else campaigns_data.get("results", [])
+                for campaign in campaigns[:5]:
+                    va_tasks.append({
+                        "client": campaign.get("business_name", "Unknown"),
+                        "task": "Check review campaign responses",
+                        "instructions": "Log into review booster, check for new reviews, flag negative ones",
+                        "skill_needed": "Basic"
+                    })
+            except Exception:
+                pass
+
+            return [TextContent(type="text", text=json.dumps({
+                "delegate_to_va": va_tasks[:15],
+                "owner_attention_required": owner_tasks[:10],
+                "summary": {
+                    "va_tasks": len(va_tasks),
+                    "owner_tasks": len(owner_tasks)
+                },
+                "tip": "VA tasks are routine and process-driven. Owner tasks require expertise or client relationships."
             }, indent=2))]
 
         else:
