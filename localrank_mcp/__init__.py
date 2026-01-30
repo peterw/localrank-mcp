@@ -184,6 +184,49 @@ async def list_tools():
                 "properties": {}
             }
         ),
+        Tool(
+            name="draft_client_email",
+            description="Generate a monthly update email for a client. Includes wins, current rankings, and next steps. Ready to copy-paste and send.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "business_name": {"type": "string", "description": "Client business name"}
+                },
+                "required": ["business_name"]
+            }
+        ),
+        Tool(
+            name="find_quick_wins",
+            description="Find keywords ranking 11-20 that could be pushed to page 1 with a little effort. Easy wins to show value fast.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "business_name": {"type": "string", "description": "Client business name (optional - shows all clients if not provided)"}
+                }
+            }
+        ),
+        Tool(
+            name="renewal_pitch",
+            description="Generate a renewal pitch showing all value delivered since client started. Total ranking improvements, wins, and ROI justification.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "business_name": {"type": "string", "description": "Client business name"}
+                },
+                "required": ["business_name"]
+            }
+        ),
+        Tool(
+            name="suggest_content",
+            description="Suggest blog post and content ideas based on keywords the client is tracking. Helps upsell content services.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "business_name": {"type": "string", "description": "Client business name"}
+                },
+                "required": ["business_name"]
+            }
+        ),
     ]
 
 
@@ -796,6 +839,242 @@ async def call_tool(name: str, arguments: dict):
             summary["clients"].sort(key=lambda x: status_order.get(x["status"], 4))
 
             return [TextContent(type="text", text=json.dumps(summary, indent=2))]
+
+        elif name == "draft_client_email":
+            business_name = arguments.get("business_name", "").lower()
+            if not business_name:
+                return [TextContent(type="text", text="Error: business_name is required")]
+
+            # Get scans for this client
+            scans_data = api_get("/api/scans/", params={"page_size": 50})
+            scans = scans_data.get("results", [])
+            client_scans = [s for s in scans if business_name in s.get("business", {}).get("name", "").lower()]
+
+            if not client_scans:
+                return [TextContent(type="text", text=json.dumps({
+                    "error": f"No data found for '{business_name}'"
+                }, indent=2))]
+
+            latest = client_scans[0]
+            biz_name_full = latest.get("business", {}).get("name", business_name)
+            avg_rank = latest.get("avg_rank")
+            keywords = latest.get("keywords", [])
+
+            # Calculate changes if we have previous scan
+            wins = []
+            drops = []
+            if len(client_scans) >= 2:
+                current_avg = latest.get("avg_rank")
+                previous_avg = client_scans[1].get("avg_rank")
+                if current_avg and previous_avg:
+                    change = previous_avg - current_avg
+                    if change > 0:
+                        wins.append(f"Overall ranking improved by {round(change, 1)} positions")
+                    elif change < 0:
+                        drops.append(f"Rankings dropped by {round(abs(change), 1)} positions - we're working on recovery")
+
+            # Build email
+            token = latest.get("public_share_token")
+            map_url = f"https://app.localrank.so/share/{token}" if token else None
+
+            email_parts = [
+                f"Subject: {biz_name_full} - Monthly SEO Update",
+                "",
+                f"Hi,",
+                "",
+                f"Here's your monthly local SEO update for {biz_name_full}.",
+                "",
+                f"**Current Performance:**",
+                f"- Average Local Rank: #{round(avg_rank, 1) if avg_rank else 'N/A'}",
+                f"- Keywords Tracked: {len(keywords)}",
+            ]
+
+            if wins:
+                email_parts.append("")
+                email_parts.append("**Wins This Period:**")
+                for win in wins:
+                    email_parts.append(f"- {win}")
+
+            if drops:
+                email_parts.append("")
+                email_parts.append("**Areas of Focus:**")
+                for drop in drops:
+                    email_parts.append(f"- {drop}")
+
+            if map_url:
+                email_parts.append("")
+                email_parts.append(f"**View Your Ranking Map:** {map_url}")
+
+            email_parts.extend([
+                "",
+                "Let me know if you have any questions!",
+                "",
+                "Best regards"
+            ])
+
+            return [TextContent(type="text", text=json.dumps({
+                "business_name": biz_name_full,
+                "email_draft": "\n".join(email_parts),
+                "tip": "Customize this email with specific insights before sending"
+            }, indent=2))]
+
+        elif name == "find_quick_wins":
+            business_filter = arguments.get("business_name", "").lower()
+
+            # Get scans
+            scans_data = api_get("/api/scans/", params={"page_size": 100})
+            scans = scans_data.get("results", [])
+
+            if business_filter:
+                scans = [s for s in scans if business_filter in s.get("business", {}).get("name", "").lower()]
+
+            # Group by business, get latest
+            by_business = {}
+            for scan in scans:
+                biz_name = scan.get("business", {}).get("name", "Unknown")
+                if biz_name not in by_business:
+                    by_business[biz_name] = scan
+
+            quick_wins = []
+            for biz_name, scan in by_business.items():
+                scan_detail = api_get(f"/api/scans/{scan['uuid']}/")
+
+                for kw in scan_detail.get("keyword_results", []):
+                    avg_rank = kw.get("avg_rank")
+                    # Quick wins are keywords ranking 11-20 (just off page 1)
+                    if avg_rank and 11 <= avg_rank <= 20:
+                        quick_wins.append({
+                            "business_name": biz_name,
+                            "keyword": kw.get("keyword"),
+                            "current_rank": round(avg_rank, 1),
+                            "positions_to_page_1": round(avg_rank - 10, 1),
+                            "opportunity": "High" if avg_rank <= 15 else "Medium"
+                        })
+
+            # Sort by easiest wins first
+            quick_wins.sort(key=lambda x: x["current_rank"])
+
+            return [TextContent(type="text", text=json.dumps({
+                "quick_wins": quick_wins[:20],
+                "total_opportunities": len(quick_wins),
+                "tip": "These keywords are close to page 1. A little push (reviews, citations, GBP optimization) could get them there."
+            }, indent=2))]
+
+        elif name == "renewal_pitch":
+            business_name = arguments.get("business_name", "").lower()
+            if not business_name:
+                return [TextContent(type="text", text="Error: business_name is required")]
+
+            # Get all scans for this client
+            scans_data = api_get("/api/scans/", params={"page_size": 100})
+            scans = scans_data.get("results", [])
+            client_scans = [s for s in scans if business_name in s.get("business", {}).get("name", "").lower()]
+
+            if not client_scans:
+                return [TextContent(type="text", text=json.dumps({
+                    "error": f"No data found for '{business_name}'"
+                }, indent=2))]
+
+            biz_name_full = client_scans[0].get("business", {}).get("name", business_name)
+            latest = client_scans[0]
+            oldest = client_scans[-1]
+
+            # Calculate total improvement
+            current_rank = latest.get("avg_rank")
+            starting_rank = oldest.get("avg_rank")
+            total_improvement = None
+            if current_rank and starting_rank:
+                total_improvement = starting_rank - current_rank
+
+            # Count total scans
+            total_scans = len(client_scans)
+
+            # Get keywords tracked
+            keywords = latest.get("keywords", [])
+
+            token = latest.get("public_share_token")
+
+            pitch = {
+                "business_name": biz_name_full,
+                "relationship_summary": {
+                    "total_scans_run": total_scans,
+                    "keywords_monitored": len(keywords),
+                    "first_scan_date": oldest.get("created_at"),
+                    "latest_scan_date": latest.get("created_at"),
+                },
+                "value_delivered": {
+                    "starting_avg_rank": round(starting_rank, 1) if starting_rank else None,
+                    "current_avg_rank": round(current_rank, 1) if current_rank else None,
+                    "total_rank_improvement": round(total_improvement, 1) if total_improvement else None,
+                    "improvement_direction": "better" if total_improvement and total_improvement > 0 else "needs attention"
+                },
+                "renewal_talking_points": []
+            }
+
+            # Build talking points
+            if total_improvement and total_improvement > 0:
+                pitch["renewal_talking_points"].append(f"Improved average ranking by {round(total_improvement, 1)} positions since starting")
+            if total_scans > 5:
+                pitch["renewal_talking_points"].append(f"Consistent monitoring with {total_scans} scans - caught issues early")
+            if current_rank and current_rank < 10:
+                pitch["renewal_talking_points"].append(f"Currently ranking on page 1 (avg #{round(current_rank, 1)})")
+            pitch["renewal_talking_points"].append("Continued optimization needed to maintain and improve rankings")
+            pitch["renewal_talking_points"].append("Competitors are always working to outrank - stopping now risks losing gains")
+
+            if token:
+                pitch["visual_proof"] = f"https://app.localrank.so/share/{token}"
+
+            return [TextContent(type="text", text=json.dumps(pitch, indent=2))]
+
+        elif name == "suggest_content":
+            business_name = arguments.get("business_name", "").lower()
+            if not business_name:
+                return [TextContent(type="text", text="Error: business_name is required")]
+
+            # Get scans for this client
+            scans_data = api_get("/api/scans/", params={"page_size": 50})
+            scans = scans_data.get("results", [])
+            client_scans = [s for s in scans if business_name in s.get("business", {}).get("name", "").lower()]
+
+            if not client_scans:
+                return [TextContent(type="text", text=json.dumps({
+                    "error": f"No data found for '{business_name}'"
+                }, indent=2))]
+
+            latest = client_scans[0]
+            biz_name_full = latest.get("business", {}).get("name", business_name)
+            keywords = latest.get("keywords", [])
+
+            # Generate content ideas based on keywords
+            content_ideas = []
+            for kw in keywords:
+                content_ideas.extend([
+                    {
+                        "keyword": kw,
+                        "content_type": "Blog Post",
+                        "title_idea": f"Top 10 Tips for {kw.title()}",
+                        "angle": "Educational listicle"
+                    },
+                    {
+                        "keyword": kw,
+                        "content_type": "FAQ Page",
+                        "title_idea": f"Frequently Asked Questions About {kw.title()}",
+                        "angle": "Answer common questions to capture voice search"
+                    },
+                    {
+                        "keyword": kw,
+                        "content_type": "Local Landing Page",
+                        "title_idea": f"{kw.title()} in [City Name]",
+                        "angle": "Location-specific service page"
+                    }
+                ])
+
+            return [TextContent(type="text", text=json.dumps({
+                "business_name": biz_name_full,
+                "keywords_analyzed": keywords,
+                "content_ideas": content_ideas[:15],
+                "tip": "Localized content targeting these keywords can improve rankings and attract qualified leads. Offer content creation as an add-on service."
+            }, indent=2))]
 
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
