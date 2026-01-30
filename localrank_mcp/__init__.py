@@ -137,11 +137,14 @@ async def list_tools():
             }
         ),
         Tool(
-            name="get_upsell_opportunities",
-            description="Find upsell opportunities across all clients. Identifies clients who could benefit from more keywords, review campaigns, citations, or need rescue (ranking drops). Perfect for monthly account reviews.",
+            name="get_recommendations",
+            description="Get recommendations for how to help a client rank better. Analyzes their data and suggests LocalRank features to use: more keywords, review campaigns, citation building, GBP optimization, etc.",
             inputSchema={
                 "type": "object",
-                "properties": {}
+                "properties": {
+                    "business_name": {"type": "string", "description": "Client business name to analyze"}
+                },
+                "required": ["business_name"]
             }
         ),
     ]
@@ -396,91 +399,111 @@ async def call_tool(name: str, arguments: dict):
                 "tip": "Use client_report for detailed breakdown of a specific client"
             }, indent=2))]
 
-        elif name == "get_upsell_opportunities":
-            opportunities = {
-                "expand_keywords": [],      # Clients tracking few keywords
-                "need_review_campaign": [],  # Clients without active campaigns
-                "ranking_rescue": [],        # Clients with significant drops
-                "low_visibility": [],        # Clients ranking poorly
-            }
+        elif name == "get_recommendations":
+            business_name = arguments.get("business_name", "").lower()
+            if not business_name:
+                return [TextContent(type="text", text="Error: business_name is required")]
 
-            # Get scans to analyze keyword count and rankings
-            scans_data = api_get("/api/scans/", params={"page_size": 100})
+            recommendations = []
+
+            # Get scans for this client
+            scans_data = api_get("/api/scans/", params={"page_size": 50})
             scans = scans_data.get("results", [])
+            client_scans = [s for s in scans if business_name in s.get("business", {}).get("name", "").lower()]
 
-            # Group by business for analysis
-            by_business = {}
-            for scan in scans:
-                biz = scan.get("business", {})
-                biz_name = biz.get("name", "Unknown")
-                if biz_name not in by_business:
-                    by_business[biz_name] = {"scans": [], "uuid": biz.get("uuid")}
-                by_business[biz_name]["scans"].append(scan)
+            if not client_scans:
+                return [TextContent(type="text", text=json.dumps({
+                    "error": f"No data found for '{business_name}'",
+                    "recommendations": [{
+                        "action": "Run first scan",
+                        "feature": "Rank Tracker",
+                        "reason": "No ranking data yet - run a scan to establish baseline",
+                        "path": "/rank-tracker"
+                    }]
+                }, indent=2))]
 
-            for biz_name, data in by_business.items():
-                latest = data["scans"][0] if data["scans"] else None
-                if not latest:
-                    continue
+            latest = client_scans[0]
+            keywords = latest.get("keywords", [])
+            avg_rank = latest.get("avg_rank")
+            biz_name_full = latest.get("business", {}).get("name", business_name)
 
-                keywords = latest.get("keywords", [])
-                avg_rank = latest.get("avg_rank")
+            # Recommendation: Track more keywords
+            if len(keywords) < 5:
+                recommendations.append({
+                    "action": "Add more keywords",
+                    "feature": "Rank Tracker",
+                    "reason": f"Only tracking {len(keywords)} keywords. Add more to cover all service areas.",
+                    "path": "/rank-tracker"
+                })
 
-                # Opportunity: Few keywords (could expand coverage)
-                if len(keywords) < 3:
-                    opportunities["expand_keywords"].append({
-                        "business_name": biz_name,
-                        "current_keywords": len(keywords),
-                        "suggestion": "Add more keywords to expand local coverage",
+            # Recommendation: Poor rankings - need optimization
+            if avg_rank and avg_rank > 10:
+                recommendations.append({
+                    "action": "Optimize Google Business Profile",
+                    "feature": "GBP Manager",
+                    "reason": f"Average rank is {round(avg_rank, 1)}. GBP optimization can improve visibility.",
+                    "path": "/gbp"
+                })
+
+            # Recommendation: Ranking dropped
+            if len(client_scans) >= 2:
+                previous = client_scans[1]
+                prev_avg = previous.get("avg_rank")
+                if avg_rank and prev_avg and (avg_rank - prev_avg) > 2:
+                    recommendations.append({
+                        "action": "Investigate ranking drop",
+                        "feature": "Rank Tracker",
+                        "reason": f"Rankings dropped from {round(prev_avg, 1)} to {round(avg_rank, 1)}. Check for GBP issues or new competitors.",
+                        "path": "/rank-tracker"
                     })
 
-                # Opportunity: Low visibility (ranking >10 on average)
-                if avg_rank and avg_rank > 10:
-                    opportunities["low_visibility"].append({
-                        "business_name": biz_name,
-                        "avg_rank": round(avg_rank, 1),
-                        "suggestion": "Poor visibility - consider SEO package or GBP optimization",
-                    })
-
-                # Opportunity: Ranking dropped significantly
-                if len(data["scans"]) >= 2:
-                    previous = data["scans"][1]
-                    prev_avg = previous.get("avg_rank")
-                    if avg_rank and prev_avg and (prev_avg - avg_rank) < -2:
-                        opportunities["ranking_rescue"].append({
-                            "business_name": biz_name,
-                            "current_rank": round(avg_rank, 1),
-                            "previous_rank": round(prev_avg, 1),
-                            "dropped_by": round(avg_rank - prev_avg, 1),
-                            "suggestion": "Significant ranking drop - offer rescue/recovery package",
-                        })
-
-            # Get review campaigns to find clients without active campaigns
+            # Check for review campaign
             try:
                 campaigns_data = api_get("/review-booster/campaigns/")
                 campaigns = campaigns_data if isinstance(campaigns_data, list) else campaigns_data.get("results", [])
-                active_campaign_businesses = set()
-                for campaign in campaigns:
-                    biz_name = campaign.get("business_name") or campaign.get("business", {}).get("name")
-                    if biz_name:
-                        active_campaign_businesses.add(biz_name.lower())
-
-                # Find businesses without review campaigns
-                for biz_name in by_business.keys():
-                    if biz_name.lower() not in active_campaign_businesses:
-                        opportunities["need_review_campaign"].append({
-                            "business_name": biz_name,
-                            "suggestion": "No active review campaign - offer review booster",
-                        })
+                has_campaign = any(
+                    business_name in (c.get("business_name") or c.get("business", {}).get("name", "")).lower()
+                    for c in campaigns
+                )
+                if not has_campaign:
+                    recommendations.append({
+                        "action": "Start review campaign",
+                        "feature": "Review Booster",
+                        "reason": "No active review campaign. Reviews boost rankings and conversions.",
+                        "path": "/review-booster"
+                    })
             except Exception:
-                pass  # Review campaigns endpoint might not be available
+                pass
 
-            # Count total opportunities
-            total = sum(len(v) for v in opportunities.values())
+            # Check citations
+            try:
+                citations_data = api_get("/citations/list/")
+                citations = citations_data.get("results", []) if isinstance(citations_data, dict) else citations_data
+                client_citations = [c for c in citations if business_name in str(c.get("business_name", "")).lower()]
+                if len(client_citations) < 10:
+                    recommendations.append({
+                        "action": "Build more citations",
+                        "feature": "Citation Builder",
+                        "reason": f"Only {len(client_citations)} citations found. More citations improve local authority.",
+                        "path": "/citations"
+                    })
+            except Exception:
+                pass
+
+            # If rankings are good, suggest monitoring
+            if avg_rank and avg_rank <= 5 and not recommendations:
+                recommendations.append({
+                    "action": "Set up recurring scans",
+                    "feature": "Rank Tracker",
+                    "reason": f"Great rankings (avg {round(avg_rank, 1)})! Set up weekly scans to monitor and catch drops early.",
+                    "path": "/rank-tracker"
+                })
 
             return [TextContent(type="text", text=json.dumps({
-                "total_opportunities": total,
-                "opportunities": opportunities,
-                "tip": "Use these insights for monthly client reviews and upsell conversations"
+                "business_name": biz_name_full,
+                "current_avg_rank": round(avg_rank, 1) if avg_rank else None,
+                "keywords_tracked": len(keywords),
+                "recommendations": recommendations,
             }, indent=2))]
 
         else:
