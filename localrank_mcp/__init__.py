@@ -115,6 +115,27 @@ async def list_tools():
                 "required": ["location_id"]
             }
         ),
+        Tool(
+            name="client_report",
+            description="Generate a client report comparing recent scans. Shows ranking changes, wins (improved), drops (declined), and visual map URL. Perfect for sending to clients.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "business_name": {"type": "string", "description": "Client business name to search for"}
+                },
+                "required": ["business_name"]
+            }
+        ),
+        Tool(
+            name="get_ranking_changes",
+            description="Get all clients with ranking drops or improvements. Use to quickly find which clients need attention.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "type": {"type": "string", "description": "Filter: 'drops' for declined, 'wins' for improved, 'all' for both (default)"}
+                }
+            }
+        ),
     ]
 
 
@@ -225,6 +246,147 @@ async def call_tool(name: str, arguments: dict):
         elif name == "list_gmb_reviews":
             data = api_get(f"/api/gmb/locations/{arguments['location_id']}/reviews/")
             return [TextContent(type="text", text=json.dumps(data, indent=2))]
+
+        elif name == "client_report":
+            business_name = arguments.get("business_name", "").lower()
+            if not business_name:
+                return [TextContent(type="text", text="Error: business_name is required")]
+
+            # Get scans filtered by business name
+            data = api_get("/api/scans/", params={"page_size": 50})
+            results = data.get("results", [])
+            client_scans = [s for s in results if business_name in s.get("business", {}).get("name", "").lower()]
+
+            if len(client_scans) == 0:
+                return [TextContent(type="text", text=json.dumps({
+                    "error": f"No scans found for '{business_name}'",
+                    "tip": "Use list_businesses to see all clients"
+                }, indent=2))]
+
+            # Get most recent scan details
+            latest = client_scans[0]
+            latest_detail = api_get(f"/api/scans/{latest['uuid']}/")
+
+            report = {
+                "business_name": latest.get("business", {}).get("name"),
+                "latest_scan": {
+                    "date": latest_detail.get("created_at"),
+                    "avg_rank": latest_detail.get("avg_rank"),
+                    "keywords": []
+                },
+                "wins": [],
+                "drops": [],
+                "unchanged": [],
+            }
+
+            # Extract keyword rankings from latest
+            for kw in latest_detail.get("keyword_results", []):
+                report["latest_scan"]["keywords"].append({
+                    "keyword": kw.get("keyword"),
+                    "avg_rank": kw.get("avg_rank"),
+                    "best_rank": kw.get("best_rank"),
+                })
+
+            # Compare with previous scan if available
+            if len(client_scans) >= 2:
+                previous = client_scans[1]
+                previous_detail = api_get(f"/api/scans/{previous['uuid']}/")
+                report["previous_scan"] = {
+                    "date": previous_detail.get("created_at"),
+                    "avg_rank": previous_detail.get("avg_rank"),
+                }
+
+                # Build keyword lookup from previous scan
+                prev_kw_ranks = {}
+                for kw in previous_detail.get("keyword_results", []):
+                    prev_kw_ranks[kw.get("keyword")] = kw.get("avg_rank")
+
+                # Compare rankings
+                for kw in latest_detail.get("keyword_results", []):
+                    keyword = kw.get("keyword")
+                    current_rank = kw.get("avg_rank")
+                    prev_rank = prev_kw_ranks.get(keyword)
+
+                    if prev_rank and current_rank:
+                        change = prev_rank - current_rank  # Positive = improved (lower rank is better)
+                        if change > 0:
+                            report["wins"].append({"keyword": keyword, "from": prev_rank, "to": current_rank, "improved_by": round(change, 1)})
+                        elif change < 0:
+                            report["drops"].append({"keyword": keyword, "from": prev_rank, "to": current_rank, "dropped_by": round(abs(change), 1)})
+                        else:
+                            report["unchanged"].append({"keyword": keyword, "rank": current_rank})
+
+            # Add visual report URLs
+            token = latest_detail.get("public_share_token")
+            if token:
+                report["view_url"] = f"https://app.localrank.so/share/{token}"
+                report["embed_url"] = f"https://app.localrank.so/share/{token}?embed=true"
+
+            report["total_scans"] = len(client_scans)
+            return [TextContent(type="text", text=json.dumps(report, indent=2))]
+
+        elif name == "get_ranking_changes":
+            filter_type = arguments.get("type", "all").lower()
+
+            # Get recent scans
+            data = api_get("/api/scans/", params={"page_size": 100})
+            results = data.get("results", [])
+
+            # Group scans by business
+            by_business = {}
+            for scan in results:
+                biz = scan.get("business", {})
+                biz_name = biz.get("name", "Unknown")
+                if biz_name not in by_business:
+                    by_business[biz_name] = []
+                by_business[biz_name].append(scan)
+
+            changes = []
+            for biz_name, scans in by_business.items():
+                if len(scans) < 2:
+                    continue
+
+                # Compare two most recent scans
+                latest = scans[0]
+                previous = scans[1]
+
+                latest_avg = latest.get("avg_rank")
+                prev_avg = previous.get("avg_rank")
+
+                if latest_avg and prev_avg:
+                    change = prev_avg - latest_avg  # Positive = improved
+
+                    entry = {
+                        "business_name": biz_name,
+                        "current_avg_rank": round(latest_avg, 1),
+                        "previous_avg_rank": round(prev_avg, 1),
+                        "change": round(change, 1),
+                        "latest_scan_date": latest.get("created_at"),
+                    }
+
+                    # Add visual URL
+                    token = latest.get("public_share_token")
+                    if token:
+                        entry["view_url"] = f"https://app.localrank.so/share/{token}"
+
+                    if change > 0:
+                        entry["status"] = "improved"
+                        if filter_type in ["all", "wins"]:
+                            changes.append(entry)
+                    elif change < 0:
+                        entry["status"] = "declined"
+                        if filter_type in ["all", "drops"]:
+                            changes.append(entry)
+
+            # Sort by change magnitude (biggest drops first for attention)
+            changes.sort(key=lambda x: x["change"])
+
+            return [TextContent(type="text", text=json.dumps({
+                "filter": filter_type,
+                "clients_with_changes": len(changes),
+                "changes": changes,
+                "tip": "Use client_report for detailed breakdown of a specific client"
+            }, indent=2))]
 
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
