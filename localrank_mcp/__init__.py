@@ -243,6 +243,28 @@ async def list_tools():
                 "properties": {}
             }
         ),
+        Tool(
+            name="get_boost_status",
+            description="Check the status of LocalBoost, SuperBoost, and ContentBoost for a client. Shows citations built, backlinks created, and content published.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "business_name": {"type": "string", "description": "Client business name"}
+                },
+                "required": ["business_name"]
+            }
+        ),
+        Tool(
+            name="list_boost_activity",
+            description="Get recent boost activity across all clients - citations submitted, content published, optimizations made. Great for showing clients what you're doing for them.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "business_name": {"type": "string", "description": "Filter by business name (optional)"},
+                    "limit": {"type": "integer", "description": "Max activities to return (default 20)"}
+                }
+            }
+        ),
     ]
 
 
@@ -1253,6 +1275,151 @@ async def call_tool(name: str, arguments: dict):
                     "owner_tasks": len(owner_tasks)
                 },
                 "tip": "VA tasks are routine and process-driven. Owner tasks require expertise or client relationships."
+            }, indent=2))]
+
+        elif name == "get_boost_status":
+            business_name = arguments.get("business_name", "").lower()
+            if not business_name:
+                return [TextContent(type="text", text="Error: business_name is required")]
+
+            # Get business to find UUID
+            businesses_data = api_get("/api/businesses/")
+            businesses = businesses_data.get("results", []) if isinstance(businesses_data, dict) else businesses_data
+            matching = [b for b in businesses if business_name in b.get("name", "").lower()]
+
+            if not matching:
+                return [TextContent(type="text", text=json.dumps({
+                    "error": f"No business found matching '{business_name}'"
+                }, indent=2))]
+
+            business = matching[0]
+            biz_uuid = business.get("uuid")
+            biz_name_full = business.get("name")
+
+            boost_status = {
+                "business_name": biz_name_full,
+                "localboost": {
+                    "what_it_does": "Builds citations on 50+ local directories to increase local authority and NAP consistency",
+                    "status": "not_purchased",
+                    "citations_built": 0,
+                    "deliverables": []
+                },
+                "superboost": {
+                    "what_it_does": "Premium citation building on 100+ high-authority sites plus Google Business Profile optimization",
+                    "status": "not_purchased",
+                    "citations_built": 0,
+                    "deliverables": []
+                },
+                "contentboost": {
+                    "what_it_does": "AI-generated localized blog content targeting your keywords to improve topical authority",
+                    "status": "not_purchased",
+                    "articles_created": 0
+                }
+            }
+
+            # Get bonus citations (LocalBoost/SuperBoost deliverables)
+            try:
+                bonus_data = api_get("/citations/bonus-citations/", params={"business": biz_uuid})
+                bonus_citations = bonus_data.get("results", []) if isinstance(bonus_data, dict) else bonus_data
+
+                for citation in bonus_citations:
+                    boost_type = citation.get("boost_type", "").upper()
+                    url = citation.get("url", "")
+                    if boost_type == "LOCALBOOST":
+                        boost_status["localboost"]["citations_built"] += 1
+                        boost_status["localboost"]["status"] = "active"
+                        if len(boost_status["localboost"]["deliverables"]) < 10:
+                            boost_status["localboost"]["deliverables"].append(url)
+                    elif boost_type == "SUPERBOOST":
+                        boost_status["superboost"]["citations_built"] += 1
+                        boost_status["superboost"]["status"] = "active"
+                        if len(boost_status["superboost"]["deliverables"]) < 10:
+                            boost_status["superboost"]["deliverables"].append(url)
+
+            except Exception:
+                pass
+
+            # Check ContentBoost status
+            try:
+                # ContentBoost is tracked via has_content_boost on business
+                biz_detail = api_get(f"/citations/businesses/{biz_uuid}/")
+                if biz_detail.get("has_content_boost"):
+                    boost_status["contentboost"]["status"] = "active"
+            except Exception:
+                pass
+
+            # Get activity logs to show work done
+            try:
+                activity_data = api_get(f"/citations/businesses/{biz_uuid}/activity-logs/")
+                activities = activity_data.get("results", []) if isinstance(activity_data, dict) else activity_data
+
+                # Filter for boost-related activities
+                boost_activities = []
+                for a in activities:
+                    event = a.get("event_type", "").lower()
+                    if any(x in event for x in ["boost", "citation", "content", "submitted", "built"]):
+                        boost_activities.append({
+                            "what_happened": a.get("message") or a.get("event_type"),
+                            "when": a.get("created_at")
+                        })
+
+                if boost_activities:
+                    boost_status["work_completed"] = boost_activities[:10]
+            except Exception:
+                pass
+
+            # Add summary
+            active_boosts = []
+            if boost_status["localboost"]["status"] == "active":
+                active_boosts.append(f"LocalBoost ({boost_status['localboost']['citations_built']} citations)")
+            if boost_status["superboost"]["status"] == "active":
+                active_boosts.append(f"SuperBoost ({boost_status['superboost']['citations_built']} citations)")
+            if boost_status["contentboost"]["status"] == "active":
+                active_boosts.append("ContentBoost")
+
+            boost_status["summary"] = f"Active: {', '.join(active_boosts)}" if active_boosts else "No boosts active - consider LocalBoost to build citations"
+
+            return [TextContent(type="text", text=json.dumps(boost_status, indent=2))]
+
+        elif name == "list_boost_activity":
+            business_filter = arguments.get("business_name", "").lower()
+            limit = arguments.get("limit", 20)
+
+            activities = []
+
+            # Get all businesses first
+            businesses_data = api_get("/api/businesses/")
+            businesses = businesses_data.get("results", []) if isinstance(businesses_data, dict) else businesses_data
+
+            if business_filter:
+                businesses = [b for b in businesses if business_filter in b.get("name", "").lower()]
+
+            # Get activity for each business (limited to avoid too many API calls)
+            for biz in businesses[:10]:
+                biz_uuid = biz.get("uuid")
+                biz_name = biz.get("name")
+
+                try:
+                    activity_data = api_get(f"/citations/businesses/{biz_uuid}/activity-logs/")
+                    biz_activities = activity_data.get("results", []) if isinstance(activity_data, dict) else activity_data
+
+                    for activity in biz_activities[:5]:
+                        activities.append({
+                            "business_name": biz_name,
+                            "event": activity.get("event_type"),
+                            "message": activity.get("message"),
+                            "date": activity.get("created_at")
+                        })
+                except Exception:
+                    continue
+
+            # Sort by date (most recent first) and limit
+            activities.sort(key=lambda x: x.get("date", ""), reverse=True)
+
+            return [TextContent(type="text", text=json.dumps({
+                "activities": activities[:limit],
+                "total": len(activities),
+                "tip": "Share this activity log with clients to show ongoing work"
             }, indent=2))]
 
         else:
