@@ -136,6 +136,14 @@ async def list_tools():
                 }
             }
         ),
+        Tool(
+            name="get_upsell_opportunities",
+            description="Find upsell opportunities across all clients. Identifies clients who could benefit from more keywords, review campaigns, citations, or need rescue (ranking drops). Perfect for monthly account reviews.",
+            inputSchema={
+                "type": "object",
+                "properties": {}
+            }
+        ),
     ]
 
 
@@ -386,6 +394,93 @@ async def call_tool(name: str, arguments: dict):
                 "clients_with_changes": len(changes),
                 "changes": changes,
                 "tip": "Use client_report for detailed breakdown of a specific client"
+            }, indent=2))]
+
+        elif name == "get_upsell_opportunities":
+            opportunities = {
+                "expand_keywords": [],      # Clients tracking few keywords
+                "need_review_campaign": [],  # Clients without active campaigns
+                "ranking_rescue": [],        # Clients with significant drops
+                "low_visibility": [],        # Clients ranking poorly
+            }
+
+            # Get scans to analyze keyword count and rankings
+            scans_data = api_get("/api/scans/", params={"page_size": 100})
+            scans = scans_data.get("results", [])
+
+            # Group by business for analysis
+            by_business = {}
+            for scan in scans:
+                biz = scan.get("business", {})
+                biz_name = biz.get("name", "Unknown")
+                if biz_name not in by_business:
+                    by_business[biz_name] = {"scans": [], "uuid": biz.get("uuid")}
+                by_business[biz_name]["scans"].append(scan)
+
+            for biz_name, data in by_business.items():
+                latest = data["scans"][0] if data["scans"] else None
+                if not latest:
+                    continue
+
+                keywords = latest.get("keywords", [])
+                avg_rank = latest.get("avg_rank")
+
+                # Opportunity: Few keywords (could expand coverage)
+                if len(keywords) < 3:
+                    opportunities["expand_keywords"].append({
+                        "business_name": biz_name,
+                        "current_keywords": len(keywords),
+                        "suggestion": "Add more keywords to expand local coverage",
+                    })
+
+                # Opportunity: Low visibility (ranking >10 on average)
+                if avg_rank and avg_rank > 10:
+                    opportunities["low_visibility"].append({
+                        "business_name": biz_name,
+                        "avg_rank": round(avg_rank, 1),
+                        "suggestion": "Poor visibility - consider SEO package or GBP optimization",
+                    })
+
+                # Opportunity: Ranking dropped significantly
+                if len(data["scans"]) >= 2:
+                    previous = data["scans"][1]
+                    prev_avg = previous.get("avg_rank")
+                    if avg_rank and prev_avg and (prev_avg - avg_rank) < -2:
+                        opportunities["ranking_rescue"].append({
+                            "business_name": biz_name,
+                            "current_rank": round(avg_rank, 1),
+                            "previous_rank": round(prev_avg, 1),
+                            "dropped_by": round(avg_rank - prev_avg, 1),
+                            "suggestion": "Significant ranking drop - offer rescue/recovery package",
+                        })
+
+            # Get review campaigns to find clients without active campaigns
+            try:
+                campaigns_data = api_get("/review-booster/campaigns/")
+                campaigns = campaigns_data if isinstance(campaigns_data, list) else campaigns_data.get("results", [])
+                active_campaign_businesses = set()
+                for campaign in campaigns:
+                    biz_name = campaign.get("business_name") or campaign.get("business", {}).get("name")
+                    if biz_name:
+                        active_campaign_businesses.add(biz_name.lower())
+
+                # Find businesses without review campaigns
+                for biz_name in by_business.keys():
+                    if biz_name.lower() not in active_campaign_businesses:
+                        opportunities["need_review_campaign"].append({
+                            "business_name": biz_name,
+                            "suggestion": "No active review campaign - offer review booster",
+                        })
+            except Exception:
+                pass  # Review campaigns endpoint might not be available
+
+            # Count total opportunities
+            total = sum(len(v) for v in opportunities.values())
+
+            return [TextContent(type="text", text=json.dumps({
+                "total_opportunities": total,
+                "opportunities": opportunities,
+                "tip": "Use these insights for monthly client reviews and upsell conversations"
             }, indent=2))]
 
         else:
