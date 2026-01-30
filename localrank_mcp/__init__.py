@@ -24,24 +24,42 @@ current_api_key: ContextVar[str] = ContextVar("current_api_key", default="")
 
 server = Server("localrank")
 
-def api_get(endpoint: str, params: dict = None) -> dict:
-    """Make authenticated GET request to LocalRank API"""
+def get_auth_headers() -> dict:
+    """Get authentication headers based on current context"""
     token = current_token.get()
     api_key = current_api_key.get()
     if token:
-        # OAuth token from HTTP mode
-        headers = {"Authorization": f"Bearer {token}"}
+        return {"Authorization": f"Bearer {token}"}
     elif api_key:
-        # API key from query param (HTTP mode)
-        headers = {"Authorization": f"Api-Key {api_key}"}
+        return {"Authorization": f"Api-Key {api_key}"}
     elif API_KEY:
-        # API key from env (stdio mode)
-        headers = {"Authorization": f"Api-Key {API_KEY}"}
+        return {"Authorization": f"Api-Key {API_KEY}"}
     else:
         raise ValueError("No authentication provided. Use ?api_key=lr_xxx in URL.")
+
+
+def api_get(endpoint: str, params: dict = None) -> dict:
+    """Make authenticated GET request to LocalRank API"""
+    headers = get_auth_headers()
     resp = httpx.get(f"{API_BASE}{endpoint}", headers=headers, params=params, timeout=30)
     resp.raise_for_status()
     return resp.json()
+
+
+def api_post(endpoint: str, data: dict = None) -> dict:
+    """Make authenticated POST request to LocalRank API"""
+    headers = get_auth_headers()
+    resp = httpx.post(f"{API_BASE}{endpoint}", headers=headers, json=data, timeout=60)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def api_get_binary(endpoint: str) -> bytes:
+    """Make authenticated GET request expecting binary response (e.g., PDF)"""
+    headers = get_auth_headers()
+    resp = httpx.get(f"{API_BASE}{endpoint}", headers=headers, timeout=120)
+    resp.raise_for_status()
+    return resp.content
 
 
 @server.list_tools()
@@ -263,6 +281,39 @@ async def list_tools():
                     "business_name": {"type": "string", "description": "Filter by business name (optional)"},
                     "limit": {"type": "integer", "description": "Max activities to return (default 20)"}
                 }
+            }
+        ),
+        Tool(
+            name="run_audit",
+            description="Run a GMB audit on a Google Maps business URL. Analyzes reviews, ratings, response rates, and provides actionable insights. Costs 500 credits. Returns audit_id and share_url.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "gmb_url": {"type": "string", "description": "Google Maps business URL (e.g., https://www.google.com/maps/place/...)"}
+                },
+                "required": ["gmb_url"]
+            }
+        ),
+        Tool(
+            name="get_audit",
+            description="Get the results of a GMB audit by audit ID. Returns detailed analysis including review stats, issues identified, and recommendations.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "audit_id": {"type": "string", "description": "The audit UUID"}
+                },
+                "required": ["audit_id"]
+            }
+        ),
+        Tool(
+            name="get_audit_pdf",
+            description="Download a PDF report for a completed audit. Returns the PDF as base64-encoded data.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "audit_id": {"type": "string", "description": "The audit UUID"}
+                },
+                "required": ["audit_id"]
             }
         ),
     ]
@@ -1421,6 +1472,75 @@ async def call_tool(name: str, arguments: dict):
                 "total": len(activities),
                 "tip": "Share this activity log with clients to show ongoing work"
             }, indent=2))]
+
+        elif name == "run_audit":
+            gmb_url = arguments.get("gmb_url")
+            if not gmb_url:
+                return [TextContent(type="text", text="Error: gmb_url is required")]
+
+            data = api_post("/api/gmb/audit/run/", {"gmb_url": gmb_url})
+            return [TextContent(type="text", text=json.dumps({
+                "audit_id": data.get("audit_id"),
+                "status": data.get("status"),
+                "share_url": data.get("share_url"),
+                "credits_deducted": data.get("credits_deducted"),
+                "tip": "Use get_audit to check status and get results once completed"
+            }, indent=2))]
+
+        elif name == "get_audit":
+            audit_id = arguments.get("audit_id")
+            if not audit_id:
+                return [TextContent(type="text", text="Error: audit_id is required")]
+
+            data = api_get(f"/api/gmb/audit/{audit_id}/")
+
+            # Summarize the audit results
+            result = {
+                "audit_id": data.get("audit_id"),
+                "status": data.get("status"),
+                "business_name": data.get("business_name"),
+            }
+
+            if data.get("status") == "completed":
+                result["audit_score"] = data.get("audit_score")
+                result["review_stats"] = data.get("review_stats")
+                result["revenue_impact"] = data.get("revenue_impact")
+                result["issues_identified"] = data.get("issues_identified", [])[:10]
+                result["created_at"] = data.get("created_at")
+                result["expires_at"] = data.get("expires_at")
+
+                # Add share URL if available
+                business_info = data.get("business_info", {})
+                if business_info:
+                    result["business_info"] = {
+                        "name": business_info.get("name"),
+                        "address": business_info.get("address"),
+                        "phone": business_info.get("phone"),
+                    }
+
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "get_audit_pdf":
+            import base64
+            audit_id = arguments.get("audit_id")
+            if not audit_id:
+                return [TextContent(type="text", text="Error: audit_id is required")]
+
+            try:
+                pdf_bytes = api_get_binary(f"/api/gmb/audit/{audit_id}/pdf/")
+                pdf_base64 = base64.b64encode(pdf_bytes).decode("utf-8")
+                return [TextContent(type="text", text=json.dumps({
+                    "audit_id": audit_id,
+                    "pdf_base64": pdf_base64,
+                    "size_bytes": len(pdf_bytes),
+                    "tip": "Decode base64 to get PDF file"
+                }, indent=2))]
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 400:
+                    return [TextContent(type="text", text=json.dumps({
+                        "error": "Audit is not complete yet. Wait for status to be 'completed'."
+                    }, indent=2))]
+                raise
 
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
