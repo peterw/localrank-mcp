@@ -427,34 +427,43 @@ async def call_tool(name: str, arguments: dict):
             avg_rank = latest.get("avg_rank")
             biz_name_full = latest.get("business", {}).get("name", business_name)
 
-            # Recommendation: Track more keywords
-            if len(keywords) < 5:
-                recommendations.append({
-                    "action": "Add more keywords",
-                    "feature": "Rank Tracker",
-                    "reason": f"Only tracking {len(keywords)} keywords. Add more to cover all service areas.",
-                    "path": "/rank-tracker"
-                })
-
-            # Recommendation: Poor rankings - need optimization
+            # Recommendation: Poor rankings - need SuperBoost
             if avg_rank and avg_rank > 10:
                 recommendations.append({
-                    "action": "Optimize Google Business Profile",
-                    "feature": "GBP Manager",
-                    "reason": f"Average rank is {round(avg_rank, 1)}. GBP optimization can improve visibility.",
-                    "path": "/gbp"
+                    "action": "Use SuperBoost",
+                    "product": "SuperBoost",
+                    "reason": f"Average rank is {round(avg_rank, 1)}. SuperBoost uses AI-powered GBP optimization to dramatically improve visibility.",
+                    "path": "/superboost"
                 })
 
-            # Recommendation: Ranking dropped
+            # Recommendation: Moderate rankings - LocalBoost
+            if avg_rank and 5 < avg_rank <= 10:
+                recommendations.append({
+                    "action": "Use LocalBoost",
+                    "product": "LocalBoost",
+                    "reason": f"Average rank is {round(avg_rank, 1)}. LocalBoost builds local authority through citations and backlinks.",
+                    "path": "/localboost"
+                })
+
+            # Recommendation: Need content - ContentBoost
+            if avg_rank and avg_rank > 7:
+                recommendations.append({
+                    "action": "Use ContentBoost",
+                    "product": "ContentBoost",
+                    "reason": "ContentBoost creates localized content that improves rankings for service area keywords.",
+                    "path": "/contentboost"
+                })
+
+            # Recommendation: Ranking dropped - SuperBoost recovery
             if len(client_scans) >= 2:
                 previous = client_scans[1]
                 prev_avg = previous.get("avg_rank")
                 if avg_rank and prev_avg and (avg_rank - prev_avg) > 2:
                     recommendations.append({
-                        "action": "Investigate ranking drop",
-                        "feature": "Rank Tracker",
-                        "reason": f"Rankings dropped from {round(prev_avg, 1)} to {round(avg_rank, 1)}. Check for GBP issues or new competitors.",
-                        "path": "/rank-tracker"
+                        "action": "SuperBoost recovery",
+                        "product": "SuperBoost",
+                        "reason": f"Rankings dropped from {round(prev_avg, 1)} to {round(avg_rank, 1)}. SuperBoost can help recover lost positions.",
+                        "path": "/superboost"
                     })
 
             # Check for review campaign
@@ -467,36 +476,30 @@ async def call_tool(name: str, arguments: dict):
                 )
                 if not has_campaign:
                     recommendations.append({
-                        "action": "Start review campaign",
-                        "feature": "Review Booster",
+                        "action": "Start Review Booster campaign",
+                        "product": "Review Booster",
                         "reason": "No active review campaign. Reviews boost rankings and conversions.",
                         "path": "/review-booster"
                     })
             except Exception:
                 pass
 
-            # Check citations
-            try:
-                citations_data = api_get("/citations/list/")
-                citations = citations_data.get("results", []) if isinstance(citations_data, dict) else citations_data
-                client_citations = [c for c in citations if business_name in str(c.get("business_name", "")).lower()]
-                if len(client_citations) < 10:
-                    recommendations.append({
-                        "action": "Build more citations",
-                        "feature": "Citation Builder",
-                        "reason": f"Only {len(client_citations)} citations found. More citations improve local authority.",
-                        "path": "/citations"
-                    })
-            except Exception:
-                pass
-
-            # If rankings are good, suggest monitoring
-            if avg_rank and avg_rank <= 5 and not recommendations:
+            # Track more keywords
+            if len(keywords) < 5:
                 recommendations.append({
-                    "action": "Set up recurring scans",
-                    "feature": "Rank Tracker",
-                    "reason": f"Great rankings (avg {round(avg_rank, 1)})! Set up weekly scans to monitor and catch drops early.",
+                    "action": "Track more keywords",
+                    "product": "Rank Tracker",
+                    "reason": f"Only tracking {len(keywords)} keywords. Add more to measure impact of boosts.",
                     "path": "/rank-tracker"
+                })
+
+            # If rankings are good, suggest maintaining with LocalBoost
+            if avg_rank and avg_rank <= 5 and len(recommendations) == 0:
+                recommendations.append({
+                    "action": "Maintain with LocalBoost",
+                    "product": "LocalBoost",
+                    "reason": f"Great rankings (avg {round(avg_rank, 1)})! LocalBoost helps maintain authority and defend against competitors.",
+                    "path": "/localboost"
                 })
 
             return [TextContent(type="text", text=json.dumps({
