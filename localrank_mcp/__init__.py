@@ -49,17 +49,18 @@ async def list_tools():
     return [
         Tool(
             name="list_scans",
-            description="List rank tracking scans with summaries. Each scan has a share_url for a visual map report. Use limit to control results (default 10).",
+            description="List rank tracking scans. Filter by business_name to find a specific client. Returns view_url and embed_url for visual map reports.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "limit": {"type": "integer", "description": "Max scans to return (default 10, max 50)"}
+                    "limit": {"type": "integer", "description": "Max scans to return (default 10, max 50)"},
+                    "business_name": {"type": "string", "description": "Filter by business name (partial match)"}
                 }
             }
         ),
         Tool(
             name="get_scan",
-            description="Get ranking summary for a scan. Returns avg_rank per keyword and share_url for visual map. Use share_url to show the client a visual report.",
+            description="Get ranking details for a scan. Returns keyword rankings and view_url/embed_url for visual map reports to share with clients.",
             inputSchema={
                 "type": "object",
                 "properties": {"scan_id": {"type": "string", "description": "The scan UUID"}},
@@ -68,13 +69,23 @@ async def list_tools():
         ),
         Tool(
             name="list_citations",
-            description="List all citations for the user's businesses",
-            inputSchema={"type": "object", "properties": {}}
+            description="List citations for businesses. Use business_name to filter.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "business_name": {"type": "string", "description": "Filter by business name (partial match)"}
+                }
+            }
         ),
         Tool(
             name="list_businesses",
-            description="List all businesses/locations being tracked",
-            inputSchema={"type": "object", "properties": {}}
+            description="List all clients/businesses being tracked. Use search to find specific client by name.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "search": {"type": "string", "description": "Search by business name"}
+                }
+            }
         ),
         Tool(
             name="list_review_campaigns",
@@ -107,8 +118,17 @@ async def list_tools():
     ]
 
 
+def get_visual_urls(token: str) -> dict:
+    """Generate visual report URLs from share token"""
+    return {
+        "view_url": f"https://app.localrank.so/share/{token}",
+        "embed_url": f"https://app.localrank.so/share/{token}?embed=true",
+    }
+
 def summarize_scan(scan: dict) -> dict:
-    """Return lightweight scan summary with share URL emphasized"""
+    """Return lightweight scan summary with share URLs"""
+    token = scan.get("public_share_token")
+    urls = get_visual_urls(token) if token else {}
     return {
         "uuid": scan.get("uuid"),
         "business_name": scan.get("business", {}).get("name"),
@@ -116,12 +136,14 @@ def summarize_scan(scan: dict) -> dict:
         "status": scan.get("status"),
         "created_at": scan.get("created_at"),
         "avg_rank": scan.get("avg_rank"),
-        "share_url": scan.get("share_url"),  # Visual map report URL
         "scanType": scan.get("scanType"),
+        **urls,
     }
 
 def summarize_scan_detail(scan: dict) -> dict:
     """Return scan detail with keyword rankings but without heavy grid data"""
+    token = scan.get("public_share_token")
+    urls = get_visual_urls(token) if token else {}
     keyword_summary = []
     for kw in scan.get("keyword_results", []):
         keyword_summary.append({
@@ -137,11 +159,11 @@ def summarize_scan_detail(scan: dict) -> dict:
         "status": scan.get("status"),
         "created_at": scan.get("created_at"),
         "completed_at": scan.get("completed_at"),
-        "share_url": scan.get("share_url"),  # VISUAL MAP - share this with clients!
         "public_share_enabled": scan.get("public_share_enabled"),
         "keyword_rankings": keyword_summary,
         "scanType": scan.get("scanType"),
         "pinCount": scan.get("pinCount"),
+        **urls,
     }
 
 @server.call_tool()
@@ -150,12 +172,17 @@ async def call_tool(name: str, arguments: dict):
         if name == "list_scans":
             limit = min(arguments.get("limit", 10), 50)
             data = api_get("/api/scans/", params={"page_size": limit})
-            # Return lightweight summaries
-            summaries = [summarize_scan(s) for s in data.get("results", [])]
+            results = data.get("results", [])
+            # Filter by business name if provided
+            business_filter = arguments.get("business_name", "").lower()
+            if business_filter:
+                results = [s for s in results if business_filter in s.get("business", {}).get("name", "").lower()]
+            summaries = [summarize_scan(s) for s in results]
             return [TextContent(type="text", text=json.dumps({
-                "count": data.get("count"),
+                "count": len(summaries),
+                "total": data.get("count"),
                 "scans": summaries,
-                "tip": "Use share_url to show clients a visual ranking map"
+                "tip": "Use view_url for visual map, embed_url for iframe embed"
             }, indent=2))]
 
         elif name == "get_scan":
@@ -165,11 +192,23 @@ async def call_tool(name: str, arguments: dict):
 
         elif name == "list_citations":
             data = api_get("/citations/list/")
-            return [TextContent(type="text", text=json.dumps(data, indent=2))]
+            results = data.get("results", []) if isinstance(data, dict) else data
+            # Filter by business name if provided
+            business_filter = arguments.get("business_name", "").lower()
+            if business_filter and isinstance(results, list):
+                results = [c for c in results if business_filter in str(c.get("business_name", "")).lower()]
+            return [TextContent(type="text", text=json.dumps({"citations": results[:20]}, indent=2))]
 
         elif name == "list_businesses":
             data = api_get("/api/businesses/")
-            return [TextContent(type="text", text=json.dumps(data, indent=2))]
+            results = data.get("results", []) if isinstance(data, dict) else data
+            # Filter by search if provided
+            search = arguments.get("search", "").lower()
+            if search and isinstance(results, list):
+                results = [b for b in results if search in b.get("name", "").lower()]
+            # Return lightweight business list
+            businesses = [{"uuid": b.get("uuid"), "name": b.get("name"), "place_id": b.get("place_id")} for b in results[:50]]
+            return [TextContent(type="text", text=json.dumps({"businesses": businesses, "count": len(businesses)}, indent=2))]
 
         elif name == "list_review_campaigns":
             data = api_get("/review-booster/campaigns/")
