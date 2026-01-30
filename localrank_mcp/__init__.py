@@ -4,7 +4,7 @@ LocalRank MCP Server - Read-only API access for AI agents
 
 Supports both stdio (Claude Desktop) and HTTP/SSE (Claude.ai web) transports.
 - stdio: Uses LOCALRANK_API_KEY env var
-- HTTP/SSE: Uses OAuth Bearer token from request
+- HTTP/SSE: Uses API key from query param (?api_key=lr_xxx) or OAuth Bearer token
 """
 import os
 import json
@@ -18,20 +18,27 @@ API_BASE = os.getenv("LOCALRANK_API_URL", "https://api.localrank.so")
 API_KEY = os.getenv("LOCALRANK_API_KEY", "")  # For stdio mode
 PORT = int(os.getenv("PORT", "8000"))
 
-# Context var to store OAuth token for HTTP mode
+# Context vars for HTTP mode auth
 current_token: ContextVar[str] = ContextVar("current_token", default="")
+current_api_key: ContextVar[str] = ContextVar("current_api_key", default="")
 
 server = Server("localrank")
 
 def api_get(endpoint: str, params: dict = None) -> dict:
     """Make authenticated GET request to LocalRank API"""
     token = current_token.get()
+    api_key = current_api_key.get()
     if token:
         # OAuth token from HTTP mode
         headers = {"Authorization": f"Bearer {token}"}
-    else:
+    elif api_key:
+        # API key from query param (HTTP mode)
+        headers = {"Authorization": f"Api-Key {api_key}"}
+    elif API_KEY:
         # API key from env (stdio mode)
         headers = {"Authorization": f"Api-Key {API_KEY}"}
+    else:
+        raise ValueError("No authentication provided. Use ?api_key=lr_xxx in URL.")
     resp = httpx.get(f"{API_BASE}{endpoint}", headers=headers, params=params, timeout=30)
     resp.raise_for_status()
     return resp.json()
@@ -171,11 +178,13 @@ def run_http():
     sse = SseServerTransport("/messages/")
 
     async def handle_sse(request):
-        # Extract OAuth token from Authorization header
+        # Extract API key from query param or OAuth token from header
+        api_key = request.query_params.get("api_key", "")
+        if api_key:
+            current_api_key.set(api_key)
         auth_header = request.headers.get("authorization", "")
         if auth_header.lower().startswith("bearer "):
-            token = auth_header[7:]
-            current_token.set(token)
+            current_token.set(auth_header[7:])
 
         async with sse.connect_sse(
             request.scope, request.receive, request._send
@@ -185,11 +194,13 @@ def run_http():
             )
 
     async def handle_messages(request):
-        # Extract OAuth token for message handling too
+        # Extract API key from query param or OAuth token from header
+        api_key = request.query_params.get("api_key", "")
+        if api_key:
+            current_api_key.set(api_key)
         auth_header = request.headers.get("authorization", "")
         if auth_header.lower().startswith("bearer "):
-            token = auth_header[7:]
-            current_token.set(token)
+            current_token.set(auth_header[7:])
         await sse.handle_post_message(request.scope, request.receive, request._send)
 
     async def health(request):
