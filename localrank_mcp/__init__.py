@@ -86,6 +86,23 @@ async def list_tools():
             }
         ),
         Tool(
+            name="run_scan",
+            description="Run a rank tracking scan on a Google Maps / GBP URL. Costs pinCount * len(keywords) * 5 credits (unless test_mode=true). Returns scan_id + share URLs. Use get_scan until status is 'completed'.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "gmb_url": {"type": "string", "description": "Google Maps / Google Business Profile URL (e.g., https://www.google.com/maps/place/...)"},
+                    "keywords": {"type": "array", "items": {"type": "string"}, "description": "Keywords to track (max 10). If omitted, we'll fall back to the business name (brand keyword)."},
+                    "pinCount": {"type": "integer", "description": "Number of pins (default 35). Credits scale with this."},
+                    "radius": {"type": "number", "description": "Radius in km (default 5)."},
+                    "scanType": {"type": "string", "description": "one_time or repeating (default one_time). Also accepts one-time."},
+                    "frequency": {"type": "string", "description": "daily, weekly, monthly (required if repeating)."},
+                    "test_mode": {"type": "boolean", "description": "If true, does not deduct credits (default false)."},
+                },
+                "required": ["gmb_url"]
+            }
+        ),
+        Tool(
             name="list_citations",
             description="List citations for businesses. Use business_name to filter.",
             inputSchema={
@@ -390,6 +407,94 @@ async def call_tool(name: str, arguments: dict):
             data = api_get(f"/api/scans/{arguments['scan_id']}/")
             summary = summarize_scan_detail(data)
             return [TextContent(type="text", text=json.dumps(summary, indent=2))]
+
+        elif name == "run_scan":
+            gmb_url = (arguments.get("gmb_url") or "").strip()
+            if not gmb_url:
+                return [TextContent(type="text", text="Error: gmb_url is required")]
+
+            if not any(
+                token in gmb_url
+                for token in ("google.com/maps", "maps.app.goo.gl", "goo.gl/maps", "maps.google.com", "g.page", "share.google")
+            ):
+                return [TextContent(type="text", text=json.dumps({
+                    "error": "gmb_url must be a Google Maps / Google Business Profile URL.",
+                    "example": "https://www.google.com/maps/place/...",
+                }, indent=2))]
+
+            keywords = arguments.get("keywords") or []
+            if isinstance(keywords, str):
+                keywords = [k.strip() for k in keywords.split(",")]
+            keywords = [str(k).strip() for k in keywords if str(k).strip()]
+
+            # If keywords weren't provided, fall back to brand keyword (business name).
+            if not keywords:
+                try:
+                    validation = api_post("/api/businesses/validate/", {"url": gmb_url, "validation_only": True})
+                    business_name = (validation.get("business_info") or {}).get("name")
+                    if business_name:
+                        keywords = [business_name]
+                except Exception:
+                    pass
+
+            if not keywords:
+                return [TextContent(type="text", text=json.dumps({
+                    "error": "keywords are required (and could not infer a business name from the URL).",
+                    "tip": "Provide keywords (max 10), e.g. ['plumber', 'emergency plumber']",
+                }, indent=2))]
+
+            # Keep it compatible with API constraints.
+            keywords = list(dict.fromkeys(keywords))[:10]
+
+            pin_count = arguments.get("pinCount", 35)
+            radius = arguments.get("radius", 5)
+            scan_type = arguments.get("scanType", "one_time")
+            frequency = arguments.get("frequency")
+            test_mode = bool(arguments.get("test_mode", False))
+
+            try:
+                pin_count = int(pin_count)
+            except Exception:
+                pin_count = 35
+            try:
+                radius = float(radius)
+            except Exception:
+                radius = 5.0
+            if pin_count <= 0:
+                pin_count = 35
+            if radius <= 0:
+                radius = 5.0
+
+            payload = {
+                "url": gmb_url,
+                "scanType": scan_type,
+                "keywords": keywords,
+                "pinCount": pin_count,
+                "radius": radius,
+                "test_mode": test_mode,
+            }
+            if frequency:
+                payload["frequency"] = frequency
+
+            scan = api_post("/api/scans/", payload)
+            token = scan.get("public_share_token")
+            urls = get_visual_urls(token) if token else {}
+            estimated_credits = max(0, pin_count) * len(keywords) * 5
+
+            return [TextContent(type="text", text=json.dumps({
+                "scan_id": scan.get("uuid"),
+                "status": scan.get("status"),
+                "business_name": scan.get("business", {}).get("name"),
+                "keywords": scan.get("keywords", keywords),
+                "pinCount": scan.get("pinCount", pin_count),
+                "radius": scan.get("radius", radius),
+                "scanType": scan.get("scanType", scan_type),
+                "frequency": scan.get("frequency"),
+                "test_mode": test_mode,
+                "estimated_credits": 0 if test_mode else estimated_credits,
+                **urls,
+                "tip": "Scans run async. Use get_scan with scan_id until status is 'completed'.",
+            }, indent=2))]
 
         elif name == "list_citations":
             data = api_get("/citations/list/")
