@@ -114,7 +114,7 @@ async def list_tools():
         ),
         Tool(
             name="ensure_citation_business",
-            description="Limited write tool. Reuses an exact citation business match if one exists, creates a new citation business only when search finds nothing, and can optionally start a tiny buildout capped at 3 citations.",
+            description="Limited write tool. Reuses an exact citation business match if one exists, creates a new citation business only when search finds nothing, and can optionally start a citation buildout.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -126,7 +126,7 @@ async def list_tools():
                     "location_name": {"type": "string", "description": "Optional first location name"},
                     "location_data": {"type": "object", "description": "Optional extra first-location fields like city/state/hours"},
                     "start_buildout": {"type": "boolean", "description": "Set true to start a limited citation buildout"},
-                    "requested_citations": {"type": "integer", "description": "Optional requested citation count. The server always caps this tool at 3."}
+                    "requested_citations": {"type": "integer", "description": "Optional requested citation count (must be >= 1)."}
                 },
                 "required": ["business_name", "address", "phone", "website"]
             }
@@ -151,7 +151,7 @@ async def list_tools():
                                 "location_name": {"type": "string", "description": "Optional first location name"},
                                 "location_data": {"type": "object", "description": "Optional extra first-location fields"},
                                 "start_buildout": {"type": "boolean", "description": "Optional per-item override"},
-                                "requested_citations": {"type": "integer", "description": "Optional per-item requested citations (capped at 3)"}
+                                "requested_citations": {"type": "integer", "description": "Optional per-item requested citations (must be >= 1)"}
                             },
                             "required": ["business_name", "address", "phone", "website"]
                         }

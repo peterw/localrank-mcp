@@ -2,7 +2,6 @@ import json
 from typing import Any, Callable
 from urllib.parse import urlparse
 
-MAX_BUILDOUT_CITATIONS = 3
 DEFAULT_BUILDOUT_CITATIONS = 1
 SEARCH_LIMIT = 5
 MAX_BATCH_ITEMS = 10
@@ -151,7 +150,7 @@ def _build_guardrails() -> list[str]:
         "Only creates a business when citation search returns zero candidates.",
         "Blocks when search returns near matches or multiple exact matches instead of guessing.",
         "Only starts buildout when explicitly requested.",
-        f"Hard-caps any buildout to {MAX_BUILDOUT_CITATIONS} citations per call.",
+        "Uses requested_citations exactly as provided (no MCP-side cap).",
         "Blocks buildout for existing businesses that already have citations.",
     ]
 
@@ -159,7 +158,7 @@ def _build_guardrails() -> list[str]:
 def _build_batch_guardrails() -> list[str]:
     return [
         f"Batch accepts at most {MAX_BATCH_ITEMS} items per call.",
-        f"Per-item buildout is still hard-capped to {MAX_BUILDOUT_CITATIONS} citations.",
+        "Per-item requested_citations is passed through as provided.",
         "Each item runs through the same duplicate-protection checks as ensure_citation_business.",
         "Invalid items fail closed and do not stop other valid items in the batch.",
     ]
@@ -190,9 +189,7 @@ def ensure_citation_business(
     location_data = _coerce_optional_object(arguments.get("location_data"))
     start_buildout = _coerce_bool(arguments.get("start_buildout", False))
     requested_citations = _coerce_requested_citations(arguments.get("requested_citations")) if start_buildout else None
-    max_citations_used = (
-        min(requested_citations, MAX_BUILDOUT_CITATIONS) if requested_citations is not None else 0
-    )
+    max_citations_used = requested_citations if requested_citations is not None else 0
 
     requested_business = {
         "business_name": business_name,

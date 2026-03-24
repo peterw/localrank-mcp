@@ -67,7 +67,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 | `get_scan` | Get ranking details with visual map URLs |
 | `list_businesses` | List all clients being tracked |
 | `list_citations` | List citations for businesses |
-| `ensure_citation_business` | Very limited single-business citation write tool. Reuses an exact business match, creates a new business only when search is empty, and can optionally start a buildout capped at 3 citations. |
+| `ensure_citation_business` | Very limited single-business citation write tool. Reuses an exact business match, creates a new business only when search is empty, and can optionally start a buildout with the requested citation count. |
 | `ensure_citation_business_batch` | Batch version for multiple locations in one call (max 10 items). Each item still uses the same duplicate and buildout guardrails. |
 | `list_review_campaigns` | List all review collection campaigns |
 | `get_review_campaign` | Get campaign details and analytics |
@@ -107,7 +107,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 - It only creates a business when citation search returns zero candidates.
 - If citation search returns near matches or multiple exact matches, it blocks and does nothing.
 - It only starts buildout when `start_buildout=true`.
-- Any buildout request is hard-capped to 3 citations.
+- It passes `requested_citations` through exactly as requested (no MCP-side cap).
 - It blocks buildout for existing businesses that already have citations.
 - First-location seed data is passed through only to help brand-new businesses start cleanly.
 
@@ -143,7 +143,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 > "Create a citation business for Fresh HVAC at 99 Market St with phone 555-999-8888, website freshhvac.com, and start a tiny buildout"
 
 **Very limited batch citation write:**
-> "Use ensure_citation_business_batch for these 4 locations, start buildout, requested_citations 3, and max_total_requested_citations 8"
+> "Use ensure_citation_business_batch for these 4 locations, start buildout, requested_citations 50, and max_total_requested_citations 120"
 
 ---
 

@@ -120,7 +120,7 @@ class EnsureCitationBusinessTests(unittest.TestCase):
         self.assertEqual(api_post.call_count, 1)
         self.assertEqual(api_post.call_args.args[0], "/citations/businesses/")
 
-    def test_caps_buildout_to_three_citations(self):
+    def test_passes_through_requested_citations_without_mcp_cap(self):
         api_get = Mock(return_value={"businesses": []})
         api_post = Mock(
             side_effect=[
@@ -134,11 +134,7 @@ class EnsureCitationBusinessTests(unittest.TestCase):
                         "website": "https://freshhvac.com",
                     },
                 },
-                {
-                    "status": "success",
-                    "message": "Created 3 citations",
-                    "citations": [{"id": 1}, {"id": 2}, {"id": 3}],
-                },
+                {"status": "success", "message": "Buildout started", "citations": []},
             ]
         )
 
@@ -159,9 +155,9 @@ class EnsureCitationBusinessTests(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["action"], "created_business_and_started_buildout")
         self.assertTrue(result["buildout"]["started"])
-        self.assertEqual(result["buildout"]["max_citations_used"], 3)
+        self.assertEqual(result["buildout"]["max_citations_used"], 10)
         buildout_payload = api_post.call_args_list[1].args[1]
-        self.assertEqual(buildout_payload["max_citations"], 3)
+        self.assertEqual(buildout_payload["max_citations"], 10)
         self.assertEqual(buildout_payload["location_data"]["address"], "99 Market St")
         self.assertEqual(buildout_payload["location_data"]["phone"], "5559998888")
         self.assertEqual(buildout_payload["location_data"]["website"], "https://freshhvac.com")
