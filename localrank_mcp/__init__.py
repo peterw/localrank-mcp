@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-LocalRank MCP Server - Read-only API access for AI agents
+LocalRank MCP Server - mostly read-only API access for AI agents
 
 Supports both stdio (Claude Desktop) and HTTP/SSE (Claude.ai web) transports.
 - stdio: Uses LOCALRANK_API_KEY env var
@@ -9,14 +9,21 @@ Supports both stdio (Claude Desktop) and HTTP/SSE (Claude.ai web) transports.
 import os
 import json
 import asyncio
+import logging
 from contextvars import ContextVar
 import httpx
 from mcp.server import Server
 from mcp.types import Tool, TextContent
+from .citations_write import ensure_citation_business, ensure_citation_business_batch, to_json
 
 API_BASE = os.getenv("LOCALRANK_API_URL", "https://api.localrank.so")
 API_KEY = os.getenv("LOCALRANK_API_KEY", "")  # For stdio mode
 PORT = int(os.getenv("PORT", "8000"))
+logging.basicConfig(
+    level=os.getenv("LOCALRANK_MCP_LOG_LEVEL", "INFO").upper(),
+    format="%(message)s",
+)
+logger = logging.getLogger("localrank_mcp")
 
 # Context vars for HTTP mode auth
 current_token: ContextVar[str] = ContextVar("current_token", default="")
@@ -103,6 +110,60 @@ async def list_tools():
                 "properties": {
                     "search": {"type": "string", "description": "Search by business name"}
                 }
+            }
+        ),
+        Tool(
+            name="ensure_citation_business",
+            description="Limited write tool. Reuses an exact citation business match if one exists, creates a new citation business only when search finds nothing, and can optionally start a tiny buildout capped at 3 citations.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "business_name": {"type": "string", "description": "Exact business name"},
+                    "address": {"type": "string", "description": "Exact business address"},
+                    "phone": {"type": "string", "description": "Exact business phone number"},
+                    "website": {"type": "string", "description": "Business website"},
+                    "description": {"type": "string", "description": "Optional business description"},
+                    "location_name": {"type": "string", "description": "Optional first location name"},
+                    "location_data": {"type": "object", "description": "Optional extra first-location fields like city/state/hours"},
+                    "start_buildout": {"type": "boolean", "description": "Set true to start a limited citation buildout"},
+                    "requested_citations": {"type": "integer", "description": "Optional requested citation count. The server always caps this tool at 3."}
+                },
+                "required": ["business_name", "address", "phone", "website"]
+            }
+        ),
+        Tool(
+            name="ensure_citation_business_batch",
+            description="Batch citation write tool for multiple locations. Applies the same guardrails as ensure_citation_business to each item. Hard-capped to 10 items per call.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "description": "List of businesses/locations to process in one request (max 10)",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "business_name": {"type": "string", "description": "Exact business name"},
+                                "address": {"type": "string", "description": "Exact business address"},
+                                "phone": {"type": "string", "description": "Exact business phone number"},
+                                "website": {"type": "string", "description": "Business website"},
+                                "description": {"type": "string", "description": "Optional business description"},
+                                "location_name": {"type": "string", "description": "Optional first location name"},
+                                "location_data": {"type": "object", "description": "Optional extra first-location fields"},
+                                "start_buildout": {"type": "boolean", "description": "Optional per-item override"},
+                                "requested_citations": {"type": "integer", "description": "Optional per-item requested citations (capped at 3)"}
+                            },
+                            "required": ["business_name", "address", "phone", "website"]
+                        }
+                    },
+                    "start_buildout": {"type": "boolean", "description": "Default start_buildout for items missing it"},
+                    "requested_citations": {"type": "integer", "description": "Default requested citations for items missing it"},
+                    "max_total_requested_citations": {
+                        "type": "integer",
+                        "description": "Optional cross-item cap for requested citations in this batch"
+                    }
+                },
+                "required": ["items"]
             }
         ),
         Tool(
@@ -367,6 +428,44 @@ def summarize_scan_detail(scan: dict) -> dict:
         **urls,
     }
 
+
+def log_tool_transaction(tool_name: str, outcome: str, payload: dict) -> None:
+    logger.info(json.dumps({
+        "flow": "mcp_tool",
+        "tool_name": tool_name,
+        "outcome": outcome,
+        "action": payload.get("action"),
+        "status": payload.get("status"),
+        "search_results_count": payload.get("search_results_count"),
+        "clear_match_count": payload.get("clear_match_count"),
+        "candidate_count": len(payload.get("candidates", [])),
+        "created_business": payload.get("created_business"),
+        "business_uuid": payload.get("business", {}).get("uuid"),
+        "buildout_started": payload.get("buildout", {}).get("started"),
+        "buildout_requested": payload.get("buildout", {}).get("requested"),
+        "max_citations_used": payload.get("buildout", {}).get("max_citations_used"),
+    }, sort_keys=True))
+
+
+def log_batch_tool_transaction(tool_name: str, outcome: str, payload: dict) -> None:
+    summary = payload.get("summary", {})
+    logger.info(json.dumps({
+        "flow": "mcp_tool_batch",
+        "tool_name": tool_name,
+        "outcome": outcome,
+        "action": payload.get("action"),
+        "status": payload.get("status"),
+        "total_items": summary.get("total_items"),
+        "success_count": summary.get("success_count"),
+        "blocked_count": summary.get("blocked_count"),
+        "error_count": summary.get("error_count"),
+        "buildout_started_count": summary.get("buildout_started_count"),
+        "created_citations_total": summary.get("created_citations_total"),
+        "total_requested_citations": summary.get("total_requested_citations"),
+        "max_total_requested_citations": summary.get("max_total_requested_citations"),
+        "action_counts": summary.get("action_counts"),
+    }, sort_keys=True))
+
 @server.call_tool()
 async def call_tool(name: str, arguments: dict):
     try:
@@ -410,6 +509,65 @@ async def call_tool(name: str, arguments: dict):
             # Return lightweight business list
             businesses = [{"uuid": b.get("uuid"), "name": b.get("name"), "place_id": b.get("place_id")} for b in results[:50]]
             return [TextContent(type="text", text=json.dumps({"businesses": businesses, "count": len(businesses)}, indent=2))]
+
+        elif name == "ensure_citation_business":
+            try:
+                result = ensure_citation_business(arguments, api_get=api_get, api_post=api_post)
+            except Exception as exc:
+                log_tool_transaction(
+                    name,
+                    "error",
+                    {
+                        "action": "exception",
+                        "status": "error",
+                        "buildout": {
+                            "started": False,
+                            "requested": arguments.get("requested_citations"),
+                            "max_citations_used": None,
+                        },
+                        "search_results_count": None,
+                        "clear_match_count": None,
+                        "business": {},
+                        "candidates": [],
+                        "created_business": False,
+                        "message": str(exc),
+                    },
+                )
+                raise
+
+            log_tool_transaction(name, result.get("status", "success"), result)
+            return [TextContent(type="text", text=to_json(result))]
+
+        elif name == "ensure_citation_business_batch":
+            try:
+                result = ensure_citation_business_batch(arguments, api_get=api_get, api_post=api_post)
+            except Exception as exc:
+                log_batch_tool_transaction(
+                    name,
+                    "error",
+                    {
+                        "action": "exception",
+                        "status": "error",
+                        "summary": {
+                            "total_items": len(arguments.get("items", []))
+                            if isinstance(arguments.get("items"), list)
+                            else None,
+                            "success_count": 0,
+                            "blocked_count": 0,
+                            "error_count": 1,
+                            "buildout_started_count": 0,
+                            "created_citations_total": 0,
+                            "total_requested_citations": 0,
+                            "max_total_requested_citations": arguments.get("max_total_requested_citations"),
+                            "action_counts": {"exception": 1},
+                        },
+                        "message": str(exc),
+                    },
+                )
+                raise
+
+            log_batch_tool_transaction(name, result.get("status", "success"), result)
+            return [TextContent(type="text", text=to_json(result))]
 
         elif name == "list_review_campaigns":
             data = api_get("/review-booster/campaigns/")
