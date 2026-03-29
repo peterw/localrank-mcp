@@ -65,6 +65,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 |------|-------------|
 | `list_scans` | List rank tracking scans. Filter by business_name. |
 | `get_scan` | Get ranking details with visual map URLs |
+| `run_scan` | Run a new rank tracking scan (Google Maps/GBP URL + keywords) |
 | `list_businesses` | List all clients being tracked |
 | `list_citations` | List citations for businesses |
 | `ensure_citation_business` | Very limited single-business citation write tool. Reuses an exact business match, creates a new business only when search is empty, and can optionally start a buildout with the requested citation count. |
