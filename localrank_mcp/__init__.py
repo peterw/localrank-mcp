@@ -15,6 +15,7 @@ import httpx
 from mcp.server import Server
 from mcp.types import Tool, TextContent
 from .citations_write import ensure_citation_business, ensure_citation_business_batch, to_json
+from .scan_write import create_scan_run
 
 API_BASE = os.getenv("LOCALRANK_API_URL", "https://api.localrank.so")
 API_KEY = os.getenv("LOCALRANK_API_KEY", "")  # For stdio mode
@@ -90,6 +91,35 @@ async def list_tools():
                 "type": "object",
                 "properties": {"scan_id": {"type": "string", "description": "The scan UUID"}},
                 "required": ["scan_id"]
+            }
+        ),
+        Tool(
+            name="create_scan_run",
+            description="Limited write tool. Starts a scan via /api/scans/ with request validation and a recent-duplicate guardrail.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "business_uuid": {"type": "string", "description": "Target business UUID"},
+                    "keywords": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Keyword list for the scan (1-10 items)"
+                    },
+                    "scanType": {"type": "string", "description": "Optional: one-time (default) or repeating"},
+                    "frequency": {"type": "string", "description": "Required when scanType is repeating"},
+                    "pinCount": {"type": "integer", "description": "Optional pin count (default 35, must be >=1)"},
+                    "radius": {"type": "number", "description": "Optional radius (default 5.0, must be >0)"},
+                    "test_mode": {"type": "boolean", "description": "Optional test mode flag passed to scan create"},
+                    "duplicate_window_minutes": {
+                        "type": "integer",
+                        "description": "Optional recent duplicate window in minutes (default 30)"
+                    },
+                    "allow_duplicate_recent": {
+                        "type": "boolean",
+                        "description": "Optional override to allow a duplicate run inside the recent window"
+                    }
+                },
+                "required": ["business_uuid", "keywords"]
             }
         ),
         Tool(
@@ -466,6 +496,40 @@ def log_batch_tool_transaction(tool_name: str, outcome: str, payload: dict) -> N
         "action_counts": summary.get("action_counts"),
     }, sort_keys=True))
 
+
+def log_scan_run_tool_transaction(tool_name: str, outcome: str, payload: dict) -> None:
+    request_data = payload.get("request", {})
+    duplicate_check = payload.get("duplicate_check", {})
+    scan = payload.get("scan", {})
+
+    logger.info(json.dumps({
+        "flow": "mcp_tool_scan_run",
+        "tool_name": tool_name,
+        "outcome": outcome,
+        "action": payload.get("action"),
+        "status": payload.get("status"),
+        "created_scan": payload.get("created_scan"),
+        "message": payload.get("message"),
+        "business_uuid": request_data.get("business_uuid"),
+        "scan_type": request_data.get("scanType"),
+        "keyword_count": request_data.get("keyword_count"),
+        "keywords": request_data.get("keywords"),
+        "pin_count": request_data.get("pinCount"),
+        "radius": request_data.get("radius"),
+        "frequency": request_data.get("frequency"),
+        "test_mode": request_data.get("test_mode"),
+        "duplicate_window_minutes": duplicate_check.get("window_minutes"),
+        "duplicate_scanned_count": duplicate_check.get("scanned_count"),
+        "duplicate_recent_active_count": duplicate_check.get("recent_active_count"),
+        "duplicate_matching_recent_count": duplicate_check.get("matching_recent_count"),
+        "duplicate_override_used": duplicate_check.get("override_used"),
+        "duplicate_matches": duplicate_check.get("matching_recent"),
+        "scan_uuid": scan.get("uuid"),
+        "scan_status": scan.get("status"),
+        "scan_created_at": scan.get("created_at"),
+    }, sort_keys=True))
+
+
 @server.call_tool()
 async def call_tool(name: str, arguments: dict):
     try:
@@ -489,6 +553,47 @@ async def call_tool(name: str, arguments: dict):
             data = api_get(f"/api/scans/{arguments['scan_id']}/")
             summary = summarize_scan_detail(data)
             return [TextContent(type="text", text=json.dumps(summary, indent=2))]
+
+        elif name == "create_scan_run":
+            try:
+                result = create_scan_run(arguments, api_get=api_get, api_post=api_post)
+            except Exception as exc:
+                args = arguments if isinstance(arguments, dict) else {}
+                log_scan_run_tool_transaction(
+                    name,
+                    "error",
+                    {
+                        "status": "error",
+                        "action": "exception",
+                        "created_scan": False,
+                        "message": str(exc),
+                        "request": {
+                            "business_uuid": args.get("business_uuid"),
+                            "scanType": args.get("scanType") if "scanType" in args else (args.get("scan_type") or "one-time"),
+                            "keyword_count": len(args.get("keywords", []))
+                            if isinstance(args.get("keywords"), list)
+                            else 0,
+                            "keywords": args.get("keywords"),
+                            "pinCount": args.get("pinCount") if "pinCount" in args else args.get("pin_count"),
+                            "radius": args.get("radius"),
+                            "frequency": args.get("frequency"),
+                            "test_mode": bool(args.get("test_mode", False)),
+                        },
+                        "duplicate_check": {
+                            "window_minutes": args.get("duplicate_window_minutes"),
+                            "scanned_count": None,
+                            "recent_active_count": None,
+                            "matching_recent_count": None,
+                            "override_used": bool(args.get("allow_duplicate_recent", False)),
+                            "matching_recent": [],
+                        },
+                        "scan": {},
+                    },
+                )
+                raise
+
+            log_scan_run_tool_transaction(name, result.get("status", "success"), result)
+            return [TextContent(type="text", text=to_json(result))]
 
         elif name == "list_citations":
             data = api_get("/citations/list/")

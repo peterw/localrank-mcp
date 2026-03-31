@@ -65,6 +65,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 |------|-------------|
 | `list_scans` | List rank tracking scans. Filter by business_name. |
 | `get_scan` | Get ranking details with visual map URLs |
+| `create_scan_run` | Limited scan write tool. Starts a scan with validation + duplicate guardrails. |
 | `list_businesses` | List all clients being tracked |
 | `list_citations` | List citations for businesses |
 | `ensure_citation_business` | Very limited single-business citation write tool. Reuses an exact business match, creates a new business only when search is empty, and can optionally start a buildout with the requested citation count. |
@@ -118,6 +119,17 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 - Optional `start_buildout` and `requested_citations` can be set once at the batch level as defaults.
 - Optional `max_total_requested_citations` can cap requested buildout volume across the whole batch call.
 - Invalid items fail closed and are returned as per-item errors without stopping valid items.
+
+### Limited Scan Writes
+
+`create_scan_run` is intentionally narrow:
+
+- It requires `business_uuid` and `keywords` and validates payload shape before writing.
+- It supports `scanType` (`one-time` default, `repeating` when frequency is provided).
+- It checks recent active scans for the same business + keyword set + scan type.
+- By default it blocks recent duplicates and fails closed with `blocked_recent_duplicate_scan`.
+- It only allows duplicate retries when `allow_duplicate_recent=true` is explicitly provided.
+- It emits a wide structured transaction log (`flow: mcp_tool_scan_run`) for auditability.
 
 ---
 
