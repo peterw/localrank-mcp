@@ -63,8 +63,8 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 ### 📊 Core Data
 | Tool | Description |
 |------|-------------|
-| `list_scans` | List rank tracking scans. Filter by business_name. |
-| `get_scan` | Get ranking details with visual map URLs |
+| `list_scans` | List rank tracking scans. Filter by business_name. Includes visual map and PNG/JPG grid image URLs. |
+| `get_scan` | Get ranking details with visual map URLs and keyword-level PNG/JPG grid image URLs. |
 | `create_scan_run` | Limited scan write tool. Starts a scan with validation + duplicate guardrails. |
 | `list_businesses` | List all clients being tracked |
 | `list_citations` | List citations for businesses |
@@ -79,6 +79,21 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 | Tool | Description |
 |------|-------------|
 | `client_report` | Compare recent scans - wins, drops, visual maps |
+
+### Scan map-grid images
+
+`list_scans` and `get_scan` include:
+
+- `map_grid_image_png_url`
+- `map_grid_image_jpg_url`
+- `map_grid_image_auth`
+
+Use the same `Authorization` header as the MCP/API request when fetching those image URLs, for example:
+
+```bash
+curl -H "Authorization: Api-Key YOUR_KEY" \
+  "https://app.localrank.so/api/scans/SCAN_ID/map-grid-image?format=png"
+```
 | `get_ranking_changes` | All clients with ranking changes |
 | `get_recommendations` | How to help a client rank better (suggests SuperBoost, LocalBoost, etc.) |
 | `get_competitors` | Who's outranking your client per keyword |

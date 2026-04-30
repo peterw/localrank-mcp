@@ -11,6 +11,7 @@ import json
 import asyncio
 import logging
 from contextvars import ContextVar
+from urllib.parse import urlencode
 import httpx
 from mcp.server import Server
 from mcp.types import Tool, TextContent
@@ -18,6 +19,7 @@ from .citations_write import ensure_citation_business, ensure_citation_business_
 from .scan_write import create_scan_run
 
 API_BASE = os.getenv("LOCALRANK_API_URL", "https://api.localrank.so")
+APP_BASE = os.getenv("LOCALRANK_APP_URL", "https://app.localrank.so")
 API_KEY = os.getenv("LOCALRANK_API_KEY", "")  # For stdio mode
 PORT = int(os.getenv("PORT", "8000"))
 logging.basicConfig(
@@ -75,7 +77,7 @@ async def list_tools():
     return [
         Tool(
             name="list_scans",
-            description="List rank tracking scans. Filter by business_name to find a specific client. Returns view_url and embed_url for visual map reports.",
+            description="List rank tracking scans. Filter by business_name to find a specific client. Returns view_url, embed_url, and PNG/JPG map-grid image URLs for visual reports.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -86,7 +88,7 @@ async def list_tools():
         ),
         Tool(
             name="get_scan",
-            description="Get ranking details for a scan. Returns keyword rankings and view_url/embed_url for visual map reports to share with clients.",
+            description="Get ranking details for a scan. Returns keyword rankings, view_url/embed_url, and PNG/JPG map-grid image URLs for reports.",
             inputSchema={
                 "type": "object",
                 "properties": {"scan_id": {"type": "string", "description": "The scan UUID"}},
@@ -412,15 +414,35 @@ async def list_tools():
 
 def get_visual_urls(token: str) -> dict:
     """Generate visual report URLs from share token"""
+    app_base = APP_BASE.rstrip("/")
     return {
-        "view_url": f"https://app.localrank.so/share/{token}",
-        "embed_url": f"https://app.localrank.so/share/{token}?embed=true",
+        "view_url": f"{app_base}/share/{token}",
+        "embed_url": f"{app_base}/share/{token}?embed=true",
+    }
+
+def get_map_grid_image_urls(scan_id: str, keyword: str = None) -> dict:
+    """Generate authenticated map-grid image API URLs for reporting automation."""
+    if not scan_id:
+        return {}
+
+    base_url = f"{APP_BASE.rstrip('/')}/api/scans/{scan_id}/map-grid-image"
+    png_params = {"format": "png"}
+    jpg_params = {"format": "jpg"}
+    if keyword:
+        png_params["keyword"] = keyword
+        jpg_params["keyword"] = keyword
+
+    return {
+        "map_grid_image_png_url": f"{base_url}?{urlencode(png_params)}",
+        "map_grid_image_jpg_url": f"{base_url}?{urlencode(jpg_params)}",
+        "map_grid_image_auth": "Use the same Authorization header as MCP/API requests.",
     }
 
 def summarize_scan(scan: dict) -> dict:
     """Return lightweight scan summary with share URLs"""
     token = scan.get("public_share_token")
     urls = get_visual_urls(token) if token else {}
+    image_urls = get_map_grid_image_urls(scan.get("uuid"))
     return {
         "uuid": scan.get("uuid"),
         "business_name": scan.get("business", {}).get("name"),
@@ -430,19 +452,23 @@ def summarize_scan(scan: dict) -> dict:
         "avg_rank": scan.get("avg_rank"),
         "scanType": scan.get("scanType"),
         **urls,
+        **image_urls,
     }
 
 def summarize_scan_detail(scan: dict) -> dict:
     """Return scan detail with keyword rankings but without heavy grid data"""
     token = scan.get("public_share_token")
     urls = get_visual_urls(token) if token else {}
+    image_urls = get_map_grid_image_urls(scan.get("uuid"))
     keyword_summary = []
     for kw in scan.get("keyword_results", []):
+        keyword = kw.get("keyword") or kw.get("term")
         keyword_summary.append({
-            "keyword": kw.get("keyword"),
+            "keyword": keyword,
             "avg_rank": kw.get("avg_rank"),
             "best_rank": kw.get("best_rank"),
             "found_count": kw.get("found_count"),
+            **get_map_grid_image_urls(scan.get("uuid"), keyword),
         })
     return {
         "uuid": scan.get("uuid"),
@@ -456,6 +482,7 @@ def summarize_scan_detail(scan: dict) -> dict:
         "scanType": scan.get("scanType"),
         "pinCount": scan.get("pinCount"),
         **urls,
+        **image_urls,
     }
 
 
@@ -546,7 +573,7 @@ async def call_tool(name: str, arguments: dict):
                 "count": len(summaries),
                 "total": data.get("count"),
                 "scans": summaries,
-                "tip": "Use view_url for visual map, embed_url for iframe embed"
+                "tip": "Use view_url for visual map, embed_url for iframe embed, and map_grid_image_png_url/map_grid_image_jpg_url for automated report images. Image URLs require the same Authorization header as MCP/API requests."
             }, indent=2))]
 
         elif name == "get_scan":
