@@ -15,6 +15,7 @@ dependencies = [
 
 [project.scripts]
 localrank-mcp = "localrank_mcp:main"
+localrank = "localrank_mcp.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["localrank_mcp"]

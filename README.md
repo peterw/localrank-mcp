@@ -58,6 +58,32 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ---
 
+## CLI
+
+The same package ships a `localrank` CLI for terminal use and coding agents
+(Claude Code, Codex, Cursor). Every command prints JSON; errors go to stderr
+as JSON with a non-zero exit code.
+
+```bash
+export LOCALRANK_API_KEY=lr_...   # create one at https://app.localrank.so/mcp
+
+uvx --from git+https://github.com/peterw/localrank-mcp localrank auth
+uvx --from git+https://github.com/peterw/localrank-mcp localrank businesses list
+uvx --from git+https://github.com/peterw/localrank-mcp localrank scans list --limit 5
+uvx --from git+https://github.com/peterw/localrank-mcp localrank scans get SCAN_ID
+uvx --from git+https://github.com/peterw/localrank-mcp localrank scans run \
+  --business-uuid UUID --keywords "plumber near me,emergency plumber" --test-mode
+uvx --from git+https://github.com/peterw/localrank-mcp localrank citations list
+uvx --from git+https://github.com/peterw/localrank-mcp localrank citations build \
+  --name "Acme Plumbing" --address "123 Main St, Austin, TX" \
+  --phone "512-555-0100" --website "https://acmeplumbing.com" --start --citations 50
+```
+
+`scans run` and `citations build` go through the same validation and
+duplicate guardrails as the MCP write tools below.
+
+---
+
 ## Available Tools
 
 ### 📊 Core Data
