@@ -1,0 +1,29 @@
+{
+  "name": "localrank",
+  "version": "0.1.0",
+  "description": "LocalRank CLI — Google Maps rank tracking and citation building for terminals and coding agents. Wrapper that runs the Python package via uv.",
+  "bin": {
+    "localrank": "bin/localrank.js"
+  },
+  "files": [
+    "bin/"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "keywords": [
+    "local-seo",
+    "google-maps",
+    "rank-tracking",
+    "citations",
+    "mcp",
+    "ai-agents",
+    "cli"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/peterw/localrank-mcp.git"
+  },
+  "homepage": "https://app.localrank.so/mcp",
+  "license": "MIT"
+}

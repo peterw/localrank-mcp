@@ -64,6 +64,10 @@ The same package ships a `localrank` CLI for terminal use and coding agents
 (Claude Code, Codex, Cursor). Every command prints JSON; errors go to stderr
 as JSON with a non-zero exit code.
 
+Node users can run it through the npm wrapper in `npm/` (auto-installs the
+uv runtime on first use): `npx localrank ...` once published — see
+`RELEASING.md`.
+
 ```bash
 export LOCALRANK_API_KEY=lr_...   # create one at https://app.localrank.so/mcp
 
