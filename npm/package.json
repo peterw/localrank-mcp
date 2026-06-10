@@ -1,7 +1,7 @@
 {
   "name": "localrank",
-  "version": "0.1.1",
-  "description": "LocalRank CLI \u2014 Google Maps rank tracking and citation building for terminals and coding agents. Wrapper that runs the Python package via uv.",
+  "version": "0.1.2",
+  "description": "See and improve how a local business ranks on Google Maps \u2014 geogrid rank scans and citation building for terminals, scripts, and AI agents. JSON output on every command.",
   "bin": {
     "localrank": "bin/localrank.js"
   },
