@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "localrank-mcp"
+name = "localrank"
 version = "0.1.0"
-description = "LocalRank MCP Server for Claude Desktop"
+description = "LocalRank — Google Maps rank tracking and citation building. MCP server + CLI for AI agents."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
