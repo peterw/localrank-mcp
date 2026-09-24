@@ -149,7 +149,7 @@ re-running it never duplicates a client.
 Chat agents (Claude, ChatGPT, and any MCP client) can use the hosted MCP
 server instead — same API key, same capabilities plus read tools for
 reviews, GBP locations, and report links:
-`https://mcp.localrank.so/sse?api_key=YOUR_API_KEY` — setup at
+`https://localrankmcp.applikuapp.com/sse?api_key=YOUR_API_KEY` — setup at
 [app.localrank.so/mcp](https://app.localrank.so/mcp).
 
 ## Links
