@@ -148,6 +148,33 @@ class MapImageTests(unittest.TestCase):
         self.assertEqual([c.type for c in result], ["text"])
 
 
+class EmailCopyTests(unittest.TestCase):
+    def draft(self, ranks):
+        scans = {"results": [
+            {"uuid": f"s{i}", "business": {"name": "Acme Plumbing"}, "avg_rank": r, "keywords": ["plumber"], "public_share_token": "tok"}
+            for i, r in enumerate(ranks)
+        ]}
+        with mock.patch.object(localrank_mcp, "api_get", return_value=scans):
+            result = run(localrank_mcp.call_tool("draft_client_email", {"business_name": "acme", "include_map_image": False}))
+        import json
+        return json.loads(result[0].text)["email_draft"]
+
+    def test_improvement_reads_like_a_person(self):
+        text = self.draft([6.4, 9.1])
+        self.assertIn('search "plumber", you now show up around #6.4 on average, up from #9.1 last month', text)
+        self.assertIn("Green stars are the spots where you're in the top 3: https://app.localrank.so/share/tok", text)
+        for robotic in ("**", "Current Performance", "Keywords Tracked", "Areas of Focus", "Monthly SEO Update"):
+            self.assertNotIn(robotic, text)
+
+    def test_drop_is_stated_plainly(self):
+        self.assertIn("down a little from #6.4 last month, and we're already working on it", self.draft([8.0, 6.4]))
+
+    def test_first_month_has_no_comparison(self):
+        text = self.draft([6.4])
+        self.assertIn("you show up around #6.4 on average.", text)
+        self.assertNotIn("last month", text)
+
+
 class CliTaggingTests(unittest.TestCase):
     def test_cli_sets_cli_transport_and_command_name(self):
         from localrank_mcp import cli

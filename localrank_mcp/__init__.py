@@ -452,9 +452,11 @@ PROMPTS = {
             "1. Call client_report with business_name=\"{business_name}\". It returns ranking wins and drops "
             "and attaches the latest heat map image.\n"
             "2. Call draft_client_email for the same client.\n"
-            "3. Rewrite the draft for a business owner in plain words, under 180 words: open with the biggest win, "
-            "list keywords that improved as 'from #X to #Y', give one sentence on any drop and what we are doing about it, "
-            "and include the ranking map link.\n"
+            "3. Rewrite it the way I would write to a client I know: short, warm, plain words, under 150 words. "
+            "Open with the one change they will care about most, for example 'you went from #9 to #6 for \"plumber\"'. "
+            "Use numbers only where they help. If something dropped, say so in one sentence and what we are doing next. "
+            "No headings, no bold, no bullet points unless there are three or more keywords, and no stock phrases "
+            "such as 'I hope this finds you well', 'Good news!' or 'Current performance'. Include the ranking map link.\n"
             "4. Show me the heat map image so I can attach it to the email."
         ),
     },
@@ -1384,62 +1386,56 @@ async def call_tool(name: str, arguments: dict):
             avg_rank = latest.get("avg_rank")
             keywords = latest.get("keywords", [])
 
-            # Calculate changes if we have previous scan
-            wins = []
-            drops = []
-            if len(client_scans) >= 2:
-                current_avg = latest.get("avg_rank")
-                previous_avg = client_scans[1].get("avg_rank")
-                if current_avg and previous_avg:
-                    change = previous_avg - current_avg
-                    if change > 0:
-                        wins.append(f"Overall ranking improved by {round(change, 1)} positions")
-                    elif change < 0:
-                        drops.append(f"Rankings dropped by {round(abs(change), 1)} positions - we're working on recovery")
-
-            # Build email
             token = latest.get("public_share_token")
             map_url = f"https://app.localrank.so/share/{token}" if token else None
+            first_keyword = keywords[0] if keywords else None
+            if isinstance(first_keyword, dict):
+                first_keyword = first_keyword.get("term") or first_keyword.get("keyword")
+            main_keyword = f'"{first_keyword}"' if first_keyword else "your main keywords"
+            current = round(avg_rank, 1) if avg_rank else None
+            previous_avg = client_scans[1].get("avg_rank") if len(client_scans) >= 2 else None
+            previous = round(previous_avg, 1) if previous_avg else None
+
+            if current and previous and current < previous:
+                headline = (
+                    f"You're climbing on Google Maps. When people nearby search {main_keyword}, "
+                    f"you now show up around #{current} on average, up from #{previous} last month."
+                )
+            elif current and previous and current > previous:
+                headline = (
+                    f"When people nearby search {main_keyword}, you now show up around #{current} on average. "
+                    f"That's down a little from #{previous} last month, and we're already working on it."
+                )
+            elif current:
+                headline = f"When people nearby search {main_keyword}, you show up around #{current} on average."
+            else:
+                headline = "Your latest ranking check is still running. I'll send the numbers as soon as it's done."
 
             email_parts = [
-                f"Subject: {biz_name_full} - Monthly SEO Update",
+                f"Subject: How {biz_name_full} is showing up on Google Maps",
                 "",
-                f"Hi,",
+                "Hi,",
                 "",
-                f"Here's your monthly local SEO update for {biz_name_full}.",
+                f"Quick update on {biz_name_full} this month.",
                 "",
-                f"**Current Performance:**",
-                f"- Average Local Rank: #{round(avg_rank, 1) if avg_rank else 'N/A'}",
-                f"- Keywords Tracked: {len(keywords)}",
+                headline,
             ]
-
-            if wins:
-                email_parts.append("")
-                email_parts.append("**Wins This Period:**")
-                for win in wins:
-                    email_parts.append(f"- {win}")
-
-            if drops:
-                email_parts.append("")
-                email_parts.append("**Areas of Focus:**")
-                for drop in drops:
-                    email_parts.append(f"- {drop}")
-
             if map_url:
-                email_parts.append("")
-                email_parts.append(f"**View Your Ranking Map:** {map_url}")
-
+                email_parts.extend([
+                    "",
+                    f"Here's the map. Green stars are the spots where you're in the top 3: {map_url}",
+                ])
             email_parts.extend([
                 "",
-                "Let me know if you have any questions!",
+                "Any questions, just hit reply.",
                 "",
-                "Best regards"
+                "Thanks,",
             ])
 
             result = [TextContent(type="text", text=json.dumps({
                 "business_name": biz_name_full,
                 "email_draft": "\n".join(email_parts),
-                "tip": "Customize this email with specific insights before sending. The latest heat map image is attached when available; show it so the user can add it to the email."
+                "tip": "This is a starting point. Rewrite it in the sender's own voice before sending. The latest heat map image is attached when available; show it so the user can add it to the email."
             }, indent=2))]
             return with_map_image(result, latest.get("uuid"), arguments)
 
