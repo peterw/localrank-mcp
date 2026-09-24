@@ -8,13 +8,22 @@ Supports both stdio (Claude Desktop) and HTTP/SSE (Claude.ai web) transports.
 """
 import os
 import json
+import base64
 import asyncio
 import logging
 from contextvars import ContextVar
 from urllib.parse import urlencode
 import httpx
 from mcp.server import Server
-from mcp.types import Tool, TextContent
+from mcp.types import (
+    GetPromptResult,
+    ImageContent,
+    Prompt,
+    PromptArgument,
+    PromptMessage,
+    TextContent,
+    Tool,
+)
 from .citations_write import ensure_citation_business, ensure_citation_business_batch, to_json
 from .scan_write import create_scan_run
 
@@ -31,6 +40,22 @@ logger = logging.getLogger("localrank_mcp")
 # Context vars for HTTP mode auth
 current_token: ContextVar[str] = ContextVar("current_token", default="")
 current_api_key: ContextVar[str] = ContextVar("current_api_key", default="")
+# Usage attribution: every API request carries the tool name and transport in
+# its User-Agent, which the backend access log already records (Axiom field
+# `user_agent`). Query: user_agent startswith "localrank-mcp/".
+current_tool: ContextVar[str] = ContextVar("current_tool", default="")
+CLIENT_VERSION = "0.2.0"
+_transport = "stdio"
+
+
+def set_transport(name: str) -> None:
+    global _transport
+    _transport = name
+
+
+def client_user_agent() -> str:
+    tool = current_tool.get() or "none"
+    return f"localrank-mcp/{CLIENT_VERSION} (transport={_transport}; tool={tool})"
 
 server = Server("localrank")
 
@@ -48,9 +73,13 @@ def get_auth_headers() -> dict:
         raise ValueError("No authentication provided. Use ?api_key=lr_xxx in URL.")
 
 
+def request_headers() -> dict:
+    return {**get_auth_headers(), "User-Agent": client_user_agent()}
+
+
 def api_get(endpoint: str, params: dict = None) -> dict:
     """Make authenticated GET request to LocalRank API"""
-    headers = get_auth_headers()
+    headers = request_headers()
     resp = httpx.get(f"{API_BASE}{endpoint}", headers=headers, params=params, timeout=30)
     resp.raise_for_status()
     return resp.json()
@@ -58,7 +87,7 @@ def api_get(endpoint: str, params: dict = None) -> dict:
 
 def api_post(endpoint: str, data: dict = None) -> dict:
     """Make authenticated POST request to LocalRank API"""
-    headers = get_auth_headers()
+    headers = request_headers()
     resp = httpx.post(f"{API_BASE}{endpoint}", headers=headers, json=data, timeout=60)
     resp.raise_for_status()
     return resp.json()
@@ -66,7 +95,7 @@ def api_post(endpoint: str, data: dict = None) -> dict:
 
 def api_get_binary(endpoint: str) -> bytes:
     """Make authenticated GET request expecting binary response (e.g., PDF)"""
-    headers = get_auth_headers()
+    headers = request_headers()
     resp = httpx.get(f"{API_BASE}{endpoint}", headers=headers, timeout=120)
     resp.raise_for_status()
     return resp.content
@@ -228,11 +257,12 @@ async def list_tools():
         ),
         Tool(
             name="client_report",
-            description="Generate a client report comparing recent scans. Shows ranking changes, wins (improved), drops (declined), and visual map URL. Perfect for sending to clients.",
+            description="Generate a client report comparing recent scans. Shows ranking changes, wins (improved), drops (declined), the visual map URL, and attaches the latest heat map image. Perfect for sending to clients.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "business_name": {"type": "string", "description": "Client business name to search for"}
+                    "business_name": {"type": "string", "description": "Client business name to search for"},
+                    "include_map_image": {"type": "boolean", "description": "Attach the latest heat map image (default true)"}
                 },
                 "required": ["business_name"]
             }
@@ -297,11 +327,12 @@ async def list_tools():
         ),
         Tool(
             name="draft_client_email",
-            description="Generate a monthly update email for a client. Includes wins, current rankings, and next steps. Ready to copy-paste and send.",
+            description="Generate a monthly update email for a client. Includes wins, current rankings, next steps, and attaches the latest heat map image. Ready to copy-paste and send.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "business_name": {"type": "string", "description": "Client business name"}
+                    "business_name": {"type": "string", "description": "Client business name"},
+                    "include_map_image": {"type": "boolean", "description": "Attach the latest heat map image (default true)"}
                 },
                 "required": ["business_name"]
             }
@@ -412,6 +443,82 @@ async def list_tools():
     ]
 
 
+PROMPTS = {
+    "monthly-client-update": {
+        "description": "Write this month's update email for one client, with the heat map.",
+        "arguments": [("business_name", "Client business name", True)],
+        "text": (
+            "Write this month's client update for {business_name}. Do not change anything in LocalRank.\n"
+            "1. Call client_report with business_name=\"{business_name}\". It returns ranking wins and drops "
+            "and attaches the latest heat map image.\n"
+            "2. Call draft_client_email for the same client.\n"
+            "3. Rewrite the draft for a business owner in plain words, under 180 words: open with the biggest win, "
+            "list keywords that improved as 'from #X to #Y', give one sentence on any drop and what we are doing about it, "
+            "and include the ranking map link.\n"
+            "4. Show me the heat map image so I can attach it to the email."
+        ),
+    },
+    "whats-changed-this-week": {
+        "description": "See which clients moved up, which dropped, and what to do today.",
+        "arguments": [],
+        "text": (
+            "Show me what changed across my LocalRank clients. Do not change anything in LocalRank.\n"
+            "1. Call get_ranking_changes, then get_at_risk_clients.\n"
+            "2. List up to 5 clients that improved (keyword, from #X to #Y) and every client that dropped (keyword, from #X to #Y).\n"
+            "3. List clients with no recent scan.\n"
+            "4. End with three actions for today, ordered by the risk of losing the client."
+        ),
+    },
+    "renewal-pitch": {
+        "description": "Write a renewal note that shows one client the results since they started.",
+        "arguments": [("business_name", "Client business name", True)],
+        "text": (
+            "Write a renewal note for {business_name}. Do not change anything in LocalRank.\n"
+            "1. Call renewal_pitch and client_report with business_name=\"{business_name}\".\n"
+            "2. Call find_quick_wins for the same client.\n"
+            "3. Write a short note to the client: results since they started, where they rank now, "
+            "and a 90-day plan built from the quick wins. Show the heat map image so I can attach it."
+        ),
+    },
+}
+
+
+@server.list_prompts()
+async def list_prompts():
+    return [
+        Prompt(
+            name=name,
+            description=spec["description"],
+            arguments=[
+                PromptArgument(name=arg, description=desc, required=required)
+                for arg, desc, required in spec["arguments"]
+            ],
+        )
+        for name, spec in PROMPTS.items()
+    ]
+
+
+@server.get_prompt()
+async def get_prompt(name: str, arguments: dict | None = None):
+    spec = PROMPTS.get(name)
+    if spec is None:
+        raise ValueError(f"Unknown prompt: {name}")
+    arguments = arguments or {}
+    missing = [arg for arg, _, required in spec["arguments"] if required and not arguments.get(arg)]
+    if missing:
+        raise ValueError(f"Missing argument: {', '.join(missing)}")
+    logger.info(json.dumps({"flow": "mcp_prompt", "prompt_name": name, "transport": _transport}))
+    return GetPromptResult(
+        description=spec["description"],
+        messages=[
+            PromptMessage(
+                role="user",
+                content=TextContent(type="text", text=spec["text"].replace("{business_name}", str(arguments.get("business_name", "")))),
+            )
+        ],
+    )
+
+
 def get_visual_urls(token: str) -> dict:
     """Generate visual report URLs from share token"""
     app_base = APP_BASE.rstrip("/")
@@ -437,6 +544,42 @@ def get_map_grid_image_urls(scan_id: str, keyword: str = None) -> dict:
         "map_grid_image_jpg_url": f"{base_url}?{urlencode(jpg_params)}",
         "map_grid_image_auth": "Use the same Authorization header as MCP/API requests.",
     }
+
+def fetch_map_image(scan_id: str, keyword: str = None):
+    """Fetch the scan heat map as an MCP image so the user can see and attach it.
+
+    The image URL needs our Authorization header, so a client email cannot
+    embed it; returning the bytes lets Claude/ChatGPT show it directly.
+    Returns None when the image is not available (scan still running, timeout).
+    """
+    if not scan_id:
+        return None
+    params = {"format": "jpg"}
+    if keyword:
+        params["keyword"] = keyword
+    try:
+        resp = httpx.get(
+            f"{APP_BASE.rstrip('/')}/api/scans/{scan_id}/map-grid-image",
+            headers=request_headers(),
+            params=params,
+            timeout=60,
+        )
+    except httpx.HTTPError as exc:
+        logger.info(json.dumps({"flow": "mcp_map_image", "outcome": "request_error", "error": type(exc).__name__}))
+        return None
+    content_type = resp.headers.get("content-type", "").split(";")[0].strip()
+    if resp.status_code != 200 or not content_type.startswith("image/"):
+        logger.info(json.dumps({"flow": "mcp_map_image", "outcome": "unavailable", "status_code": resp.status_code}))
+        return None
+    return ImageContent(type="image", data=base64.b64encode(resp.content).decode("ascii"), mimeType=content_type)
+
+
+def with_map_image(result: list, scan_id: str, arguments: dict) -> list:
+    if arguments.get("include_map_image", True) is False:
+        return result
+    image = fetch_map_image(scan_id)
+    return result + [image] if image else result
+
 
 def summarize_scan(scan: dict) -> dict:
     """Return lightweight scan summary with share URLs"""
@@ -559,6 +702,7 @@ def log_scan_run_tool_transaction(tool_name: str, outcome: str, payload: dict) -
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict):
+    current_tool.set(name)
     try:
         if name == "list_scans":
             limit = min(arguments.get("limit", 10), 50)
@@ -793,7 +937,8 @@ async def call_tool(name: str, arguments: dict):
                 report["embed_url"] = f"https://app.localrank.so/share/{token}?embed=true"
 
             report["total_scans"] = len(client_scans)
-            return [TextContent(type="text", text=json.dumps(report, indent=2))]
+            result = [TextContent(type="text", text=json.dumps(report, indent=2))]
+            return with_map_image(result, latest.get("uuid"), arguments)
 
         elif name == "get_ranking_changes":
             filter_type = arguments.get("type", "all").lower()
@@ -1291,11 +1436,12 @@ async def call_tool(name: str, arguments: dict):
                 "Best regards"
             ])
 
-            return [TextContent(type="text", text=json.dumps({
+            result = [TextContent(type="text", text=json.dumps({
                 "business_name": biz_name_full,
                 "email_draft": "\n".join(email_parts),
-                "tip": "Customize this email with specific insights before sending"
+                "tip": "Customize this email with specific insights before sending. The latest heat map image is attached when available; show it so the user can add it to the email."
             }, indent=2))]
+            return with_map_image(result, latest.get("uuid"), arguments)
 
         elif name == "find_quick_wins":
             business_filter = arguments.get("business_name", "").lower()
@@ -1843,6 +1989,7 @@ async def call_tool(name: str, arguments: dict):
 
 async def run_stdio():
     """Run server with stdio transport (for Claude Desktop)"""
+    set_transport("stdio")
     from mcp.server.stdio import stdio_server
     from mcp.server.models import InitializationOptions
     from mcp.server import NotificationOptions
@@ -1853,7 +2000,7 @@ async def run_stdio():
             write_stream,
             InitializationOptions(
                 server_name="localrank",
-                server_version="0.1.0",
+                server_version=CLIENT_VERSION,
                 capabilities=server.get_capabilities(
                     notification_options=NotificationOptions(),
                     experimental_capabilities={},
@@ -1864,6 +2011,7 @@ async def run_stdio():
 
 def run_http():
     """Run server with HTTP/SSE transport (for Claude.ai web)"""
+    set_transport("sse")
     from mcp.server.sse import SseServerTransport
     from starlette.applications import Starlette
     from starlette.routing import Route
