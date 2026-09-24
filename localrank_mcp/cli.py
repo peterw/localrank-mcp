@@ -229,6 +229,10 @@ def main() -> None:
     # Keep stdout/stderr clean JSON for agents; silence httpx request logging.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     args = build_parser().parse_args()
+    from localrank_mcp import current_tool, set_transport
+
+    set_transport("cli")
+    current_tool.set("cli:" + args.func.__name__.removeprefix("cmd_"))
     try:
         args.func(args)
     except httpx.HTTPStatusError as exc:
