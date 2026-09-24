@@ -9,7 +9,7 @@ description = "LocalRank — Google Maps rank tracking and citation building. MC
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "mcp>=1.0.0",
+    "mcp>=1.0.0,<2",
     "httpx>=0.27.0",
 ]
 
