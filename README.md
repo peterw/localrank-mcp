@@ -55,7 +55,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 - "Acme Plumbing is up for renewal - show me the value we delivered"
 - "What content should Acme blog about?"
 - "Draft a monthly update email for Acme"
-- "Get the client report link for Acme Plumbing"
+- "Get every client's report link and a ready email for this month's send"
 
 ---
 
@@ -110,7 +110,8 @@ duplicate guardrails as the MCP write tools below.
 | Tool | Description |
 |------|-------------|
 | `client_report` | Compare recent scans - wins, drops, visual maps |
-| `get_client_report_link` | The permanent client report URL for one business (turns it on if needed). Same URL every time; it always shows the newest completed scan. |
+| `get_client_report_link` | The permanent client report URL for one business (turns it on if needed), with a ready email draft and the next scheduled scan. Same URL every time; it always shows the newest completed scan. |
+| `list_client_report_links` | Read-only. Every business with a live client link: url, latest scan date, next scan date and a ready email draft. The whole monthly send in one call. |
 | `disable_client_report_link` | Turn that link off. The old URL then says "This report is no longer available". |
 
 ### Permanent client report link
@@ -122,7 +123,39 @@ business's newest completed scan, compared with the matching scan about a month 
   location, or none exactly, is rejected before anything changes, with the candidates listed.
 - Calling `get_client_report_link` again returns the same URL. After `disable_client_report_link`, the next
   get makes a new URL.
-- Both tools need an API key with write scope.
+- `get_client_report_link` and `disable_client_report_link` need an API key with write scope;
+  `list_client_report_links` works with a read-only key.
+
+### Monthly client send (LocalRank never sends the emails)
+
+The agency, or its AI agent, sends the email from its own account. LocalRank only prepares it:
+
+- `email_draft` is `{subject, body}`: a short, neutral email with this month's Top 3 coverage and average
+  position (with the change since the matching scan about a month earlier), the permanent link, and the agency
+  name as the sign-off. It never mentions LocalRank. Missing data or a missing comparison is said in words,
+  never shown as 0. It is the same text the app's "Copy email for client" copies.
+- `next_scan_date` is when the business is next scanned. `null` means no scan is scheduled (paused, cancelled or
+  one-time only), so the link will keep showing the same scan. The tool message names those businesses.
+- One call does the whole month: `list_client_report_links`, then send each `email_draft` from your own mail tool.
+
+```json
+{
+  "count": 1,
+  "links": [
+    {
+      "business": "Harbor Dental",
+      "url": "https://app.localrank.so/share/report/871fa427-6bdb-46e0-9a66-3e1a594fc56a",
+      "latest_scan_date": "2026-09-15T12:00:00Z",
+      "next_scan_date": "2026-10-15T12:00:00Z",
+      "email_draft": {
+        "subject": "Harbor Dental: Google Maps ranking report, September 2026",
+        "body": "Hi,\n\nHere is the latest Google Maps ranking report for Harbor Dental, from the scan on Sep 15, 2026.\n\n- Top 3 on Google Maps: 67% of the area we track (up from 33% on Aug 16, 2026)\n- Average position: 3.7 (improved from 7.7 on Aug 16, 2026)\n\nOpen the report here:\nhttps://app.localrank.so/share/report/871fa427-6bdb-46e0-9a66-3e1a594fc56a\n\nThis link stays the same and always shows the latest scan, so you can bookmark it.\n\nBest regards,\nAcme SEO"
+      }
+    }
+  ],
+  "message": "1 live client link(s). Each email_draft is a ready subject and body; LocalRank does not send it."
+}
+```
 
 ### Scan map-grid images
 

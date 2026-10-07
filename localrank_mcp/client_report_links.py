@@ -2,8 +2,10 @@
 
 One URL per client business. It never changes unless the agency makes a new link,
 and it always shows that business's newest completed scan, so it can go into a
-recurring client email once. These are write tools: they only ever act on one
-business, picked by UUID or by an exact, unambiguous name.
+recurring client email once. The get/disable tools are write tools: they only ever
+act on one business, picked by UUID or by an exact, unambiguous name. Listing is
+read-only. LocalRank never sends the email: the backend returns a ready draft
+(the same text the app copies) and the agency or its agent sends it.
 """
 import html
 import re
@@ -11,9 +13,15 @@ import uuid
 
 CID_IN_URL = re.compile(r"[?&]cid=(\d+)")
 ENDPOINT = "/business/api/businesses/{}/client_report/"
+LIST_ENDPOINT = "/business/api/client-reports/"
 LINK_NOTE = (
     "This URL stays the same and always shows the newest completed scan. "
-    "Paste it into the client's monthly email once; no login needed."
+    "Paste it into the client's monthly email once; no login needed. "
+    "email_draft is a ready subject and body; LocalRank does not send it."
+)
+NOT_SCHEDULED = (
+    "No scan is scheduled for this business, so the link will not update on its own. "
+    "Tell the user before sending. A recurring scan uses credits, so ask before scheduling one."
 )
 
 
@@ -97,12 +105,37 @@ def client_report_link(business, *, disable, api_get, api_post, api_delete, app_
         return {"business_id": business_id, "live": False, "url": None,
                 "message": "Client link turned off. The old URL now shows 'This report is no longer available'."}
     state = api_post(endpoint, {})
-    token = state.get("token")
-    live = bool(state.get("live") and token)
+    live = bool(state.get("live") and state.get("token"))
+    if not live:
+        return {"business": state.get("business_name"), "business_id": business_id, "live": False, "url": None,
+                "message": "The link could not be turned on."}
+    result = {"business_id": business_id, "live": True, **_sendable(state, app_base)}
+    result["message"] = LINK_NOTE if result["next_scan_date"] else f"{LINK_NOTE} {NOT_SCHEDULED}"
+    return result
+
+
+def _sendable(state, app_base):
+    """What an agent needs to send one client its monthly email."""
     return {
         "business": state.get("business_name"),
-        "business_id": business_id,
-        "live": live,
-        "url": f"{app_base.rstrip('/')}/share/report/{token}" if live else None,
-        "message": LINK_NOTE if live else "The link could not be turned on.",
+        "url": f"{app_base.rstrip('/')}/share/report/{state['token']}",
+        "latest_scan_date": state.get("latest_scan_date"),
+        "next_scan_date": state.get("next_scan_date"),
+        "email_draft": state.get("email_draft"),
     }
+
+
+def list_client_report_links(*, api_get, app_base):
+    """Every live client link in the account with its email draft: the whole monthly send in one call."""
+    states = api_get(LIST_ENDPOINT)
+    links = [_sendable(state, app_base) for state in states or [] if state.get("live") and state.get("token")]
+    stale = [link["business"] for link in links if not link["next_scan_date"]]
+    message = (f"{len(links)} live client link(s). Each email_draft is a ready subject and body; "
+               "LocalRank does not send it.") if links else (
+        "No live client links yet. Use get_client_report_link to turn one on for a business.")
+    if stale:
+        links_word = "that link will not update on its own" if len(stale) == 1 else \
+            "those links will not update on their own"
+        message += (f" No scan is scheduled for {', '.join(stale)}, so {links_word}. Tell the user before sending; "
+                    "a recurring scan uses credits, so ask before scheduling one.")
+    return {"count": len(links), "links": links, "message": message}
