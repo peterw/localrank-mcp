@@ -134,6 +134,8 @@ def list_client_report_links(*, api_get, app_base):
                "LocalRank does not send it.") if links else (
         "No live client links yet. Use get_client_report_link to turn one on for a business.")
     if stale:
-        message += (f" No scan is scheduled for {', '.join(stale)}, so those links will not update on their own. "
-                    "Tell the user before sending; a recurring scan uses credits, so ask before scheduling one.")
+        links_word = "that link will not update on its own" if len(stale) == 1 else \
+            "those links will not update on their own"
+        message += (f" No scan is scheduled for {', '.join(stale)}, so {links_word}. Tell the user before sending; "
+                    "a recurring scan uses credits, so ask before scheduling one.")
     return {"count": len(links), "links": links, "message": message}
