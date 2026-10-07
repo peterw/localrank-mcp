@@ -13,7 +13,11 @@ sys.path.insert(0, str(REPO_ROOT))
 os.environ.setdefault("LOCALRANK_API_KEY", "lr_test")
 
 import localrank_mcp  # noqa: E402
-from localrank_mcp.client_report_links import BusinessNotFound, client_report_link  # noqa: E402
+from localrank_mcp.client_report_links import (  # noqa: E402
+    BusinessNotFound,
+    client_report_link,
+    list_client_report_links,
+)
 
 localrank_mcp.API_KEY = localrank_mcp.API_KEY or "lr_test"
 
@@ -23,6 +27,12 @@ TOKEN = "871fa427-6bdb-46e0-9a66-3e1a594fc56a"
 LINK = f"https://app.localrank.so/share/report/{TOKEN}"
 HARBOR = {"uuid": UUID, "name": "Harbor Dental", "cid": "123", "url": "https://maps.google.com/?cid=123",
           "address": "12 Harbor Way"}
+
+
+DRAFT = {"subject": "Harbor Dental: Google Maps ranking report, September 2026",
+         "body": f"Hi,\n\n...\n\nOpen the report here:\nhttps://app.localrank.so/share/report/{TOKEN}\n"}
+LIVE = {"token": TOKEN, "live": True, "business_name": "Harbor Dental", "agency_name": "", "note": "",
+        "latest_scan_date": "2026-09-15T12:00:00Z", "next_scan_date": "2026-11-01T09:00:00Z", "email_draft": DRAFT}
 
 
 def grouped(*records):
@@ -69,6 +79,20 @@ class ClientReportLinkTests(unittest.TestCase):
         self.post.assert_not_called()
         self.delete.assert_not_called()
 
+    def test_link_comes_with_the_backend_email_draft_and_schedule(self):
+        self.post.return_value = LIVE
+        result = self.call(UUID)
+        self.assertEqual(result["email_draft"], DRAFT)  # built once, in the backend, same text as the app
+        self.assertEqual(result["latest_scan_date"], "2026-09-15T12:00:00Z")
+        self.assertEqual(result["next_scan_date"], "2026-11-01T09:00:00Z")
+        self.assertNotIn("No scan is scheduled", result["message"])
+
+    def test_unscheduled_business_is_flagged(self):
+        self.post.return_value = {**LIVE, "next_scan_date": None}
+        result = self.call(UUID)
+        self.assertIsNone(result["next_scan_date"])
+        self.assertIn("will not update on its own", result["message"])
+
     def test_disable_turns_off_without_creating(self):
         result = self.call(UUID, disable=True)
         self.assertFalse(result["live"])
@@ -77,11 +101,44 @@ class ClientReportLinkTests(unittest.TestCase):
         self.post.assert_not_called()
 
 
+class ListClientReportLinksTests(unittest.TestCase):
+    def test_every_live_link_with_url_dates_and_draft_in_one_read(self):
+        bay = {**LIVE, "token": TOKEN.replace("871", "999"), "business_name": "Bay Plumbing", "next_scan_date": None}
+        get = mock.Mock(return_value=[bay, LIVE, {**LIVE, "token": None, "live": False}])
+        result = list_client_report_links(api_get=get, app_base="https://app.localrank.so/")
+        get.assert_called_once_with("/business/api/client-reports/")
+        self.assertEqual(result["count"], 2)
+        self.assertEqual(result["links"][1], {
+            "business": "Harbor Dental", "url": LINK, "latest_scan_date": "2026-09-15T12:00:00Z",
+            "next_scan_date": "2026-11-01T09:00:00Z", "email_draft": DRAFT})
+        self.assertIn("No scan is scheduled for Bay Plumbing", result["message"])
+        self.assertNotIn("Harbor Dental", result["message"])
+
+    def test_no_links_says_how_to_make_one(self):
+        result = list_client_report_links(api_get=mock.Mock(return_value=[]), app_base="https://app.localrank.so")
+        self.assertEqual(result["count"], 0)
+        self.assertIn("get_client_report_link", result["message"])
+
+
 class ClientReportToolTests(unittest.TestCase):
     def test_tools_are_listed_with_one_business_argument(self):
         tools = {tool.name: tool for tool in asyncio.run(localrank_mcp.list_tools())}
         for name in ("get_client_report_link", "disable_client_report_link"):
             self.assertEqual(tools[name].inputSchema["required"], ["business"])
+        self.assertEqual(tools["list_client_report_links"].inputSchema["properties"], {})
+        self.assertFalse(any("send" in name for name in tools))  # LocalRank never sends client emails
+
+    def test_list_tool_is_one_get_with_the_tool_name_in_the_user_agent(self):
+        async def call():
+            with mock.patch.object(localrank_mcp.httpx, "get") as get:
+                get.return_value = httpx.Response(200, json=[LIVE], request=httpx.Request("GET", "https://api"))
+                result = await localrank_mcp.call_tool("list_client_report_links", {})
+            return get, json.loads(result[0].text)
+        get, payload = asyncio.run(call())
+        get.assert_called_once()
+        self.assertEqual(get.call_args.args[0], f"{localrank_mcp.API_BASE}/business/api/client-reports/")
+        self.assertIn("tool=list_client_report_links", get.call_args.kwargs["headers"]["User-Agent"])
+        self.assertEqual(payload["links"][0]["email_draft"], DRAFT)
 
     def test_tool_returns_the_url_built_from_the_backend_token(self):
         with mock.patch.object(localrank_mcp, "api_post",

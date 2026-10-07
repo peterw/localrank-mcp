@@ -26,7 +26,7 @@ from mcp.types import (
 )
 from .citations_write import ensure_citation_business, ensure_citation_business_batch, to_json
 from .scan_write import create_scan_run
-from .client_report_links import business_records, client_report_link
+from .client_report_links import business_records, client_report_link, list_client_report_links
 
 API_BASE = os.getenv("LOCALRANK_API_URL", "https://api.localrank.so")
 APP_BASE = os.getenv("LOCALRANK_APP_URL", "https://app.localrank.so")
@@ -276,13 +276,21 @@ async def list_tools():
         ),
         Tool(
             name="get_client_report_link",
-            description="Limited write tool. Get the permanent client report link for a business, turning it on if needed. The URL never changes and always shows the newest completed scan, so it can go into a recurring client email once. Clients need no login. Returns url and live.",
+            description="Limited write tool. Get the permanent client report link for a business, turning it on if needed. The URL never changes and always shows the newest completed scan, so it can go into a recurring client email once. Clients need no login. Returns url, live, latest_scan_date, next_scan_date (null = no scan scheduled, so the link will not update on its own) and email_draft (ready subject and body; LocalRank never sends it).",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "business": {"type": "string", "description": "Business UUID (from list_businesses) or exact business name"}
                 },
                 "required": ["business"]
+            }
+        ),
+        Tool(
+            name="list_client_report_links",
+            description="Read-only. Every business with a live client report link, each with url, latest_scan_date, next_scan_date (null = no scan scheduled, so that link will not update on its own) and email_draft (ready subject and body). Use this for the monthly client send: one call gives every client's link and email. LocalRank never sends the emails.",
+            inputSchema={
+                "type": "object",
+                "properties": {}
             }
         ),
         Tool(
@@ -971,6 +979,10 @@ async def call_tool(name: str, arguments: dict):
             report["total_scans"] = len(client_scans)
             result = [TextContent(type="text", text=json.dumps(report, indent=2))]
             return with_map_image(result, latest.get("uuid"), arguments)
+
+        elif name == "list_client_report_links":
+            result = list_client_report_links(api_get=api_get, app_base=APP_BASE)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         elif name in ("get_client_report_link", "disable_client_report_link"):
             result = client_report_link(
