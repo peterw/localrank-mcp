@@ -2,7 +2,7 @@
 
 Connect LocalRank to Claude AI for natural language access to your agency data.
 
-Most tools are read-only. There is now one deliberately limited write tool for citations, with hard safety rails to avoid duplicate businesses and accidental large buildouts.
+Most tools are read-only. A few deliberately limited write tools start scans, build citations and manage client report links, each with hard safety rails.
 
 ## Quick Start
 
@@ -55,6 +55,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 - "Acme Plumbing is up for renewal - show me the value we delivered"
 - "What content should Acme blog about?"
 - "Draft a monthly update email for Acme"
+- "Get the client report link for Acme Plumbing"
 
 ---
 
@@ -109,6 +110,19 @@ duplicate guardrails as the MCP write tools below.
 | Tool | Description |
 |------|-------------|
 | `client_report` | Compare recent scans - wins, drops, visual maps |
+| `get_client_report_link` | The permanent client report URL for one business (turns it on if needed). Same URL every time; it always shows the newest completed scan. |
+| `disable_client_report_link` | Turn that link off. The old URL then says "This report is no longer available". |
+
+### Permanent client report link
+
+Put one URL in a recurring client email and never update it. The page needs no login and always shows the
+business's newest completed scan, compared with the matching scan about a month earlier.
+
+- `business` is a UUID from `list_businesses` or the exact business name. A name that matches more than one
+  location, or none exactly, is rejected before anything changes, with the candidates listed.
+- Calling `get_client_report_link` again returns the same URL. After `disable_client_report_link`, the next
+  get makes a new URL.
+- Both tools need an API key with write scope.
 
 ### Scan map-grid images
 

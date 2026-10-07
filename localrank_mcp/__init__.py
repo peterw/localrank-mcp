@@ -26,6 +26,7 @@ from mcp.types import (
 )
 from .citations_write import ensure_citation_business, ensure_citation_business_batch, to_json
 from .scan_write import create_scan_run
+from .client_report_links import business_records, client_report_link
 
 API_BASE = os.getenv("LOCALRANK_API_URL", "https://api.localrank.so")
 APP_BASE = os.getenv("LOCALRANK_APP_URL", "https://app.localrank.so")
@@ -91,6 +92,12 @@ def api_post(endpoint: str, data: dict = None) -> dict:
     resp = httpx.post(f"{API_BASE}{endpoint}", headers=headers, json=data, timeout=60)
     resp.raise_for_status()
     return resp.json()
+
+
+def api_delete(endpoint: str) -> None:
+    """Make authenticated DELETE request to LocalRank API"""
+    resp = httpx.delete(f"{API_BASE}{endpoint}", headers=request_headers(), timeout=30)
+    resp.raise_for_status()
 
 
 def api_get_binary(endpoint: str) -> bytes:
@@ -265,6 +272,28 @@ async def list_tools():
                     "include_map_image": {"type": "boolean", "description": "Attach the latest heat map image (default true)"}
                 },
                 "required": ["business_name"]
+            }
+        ),
+        Tool(
+            name="get_client_report_link",
+            description="Limited write tool. Get the permanent client report link for a business, turning it on if needed. The URL never changes and always shows the newest completed scan, so it can go into a recurring client email once. Clients need no login. Returns url and live.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "business": {"type": "string", "description": "Business UUID (from list_businesses) or exact business name"}
+                },
+                "required": ["business"]
+            }
+        ),
+        Tool(
+            name="disable_client_report_link",
+            description="Limited write tool. Turn off a business's client report link. The old URL then shows 'This report is no longer available'. get_client_report_link afterwards makes a new URL.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "business": {"type": "string", "description": "Business UUID (from list_businesses) or exact business name"}
+                },
+                "required": ["business"]
             }
         ),
         Tool(
@@ -779,7 +808,8 @@ async def call_tool(name: str, arguments: dict):
 
         elif name == "list_businesses":
             data = api_get("/api/businesses/")
-            results = data.get("results", []) if isinstance(data, dict) else data
+            # The endpoint groups records by place; flatten so every entry has a usable uuid.
+            results = business_records(data.get("results", []) if isinstance(data, dict) else data)
             # Filter by search if provided
             search = arguments.get("search", "").lower()
             if search and isinstance(results, list):
@@ -941,6 +971,17 @@ async def call_tool(name: str, arguments: dict):
             report["total_scans"] = len(client_scans)
             result = [TextContent(type="text", text=json.dumps(report, indent=2))]
             return with_map_image(result, latest.get("uuid"), arguments)
+
+        elif name in ("get_client_report_link", "disable_client_report_link"):
+            result = client_report_link(
+                arguments.get("business"),
+                disable=name == "disable_client_report_link",
+                api_get=api_get,
+                api_post=api_post,
+                api_delete=api_delete,
+                app_base=APP_BASE,
+            )
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         elif name == "get_ranking_changes":
             filter_type = arguments.get("type", "all").lower()
